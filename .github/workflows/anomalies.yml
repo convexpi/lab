@@ -1,0 +1,49 @@
+name: Refresh anomaly stats
+
+on:
+  schedule:
+    - cron: "0 4 1 * *"   # 1st of each month at 04:00 UTC
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: convexpi/platform
+          token: ${{ secrets.PLATFORM_REPO_TOKEN }}
+          path: platform
+
+      - uses: actions/checkout@v4
+        with:
+          path: lab
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install convexpi-lab
+        working-directory: lab
+        run: pip install -e ".[dev]" --quiet
+
+      - name: Compute anomaly stats
+        working-directory: lab
+        run: python deploy/compute_anomaly_stats.py --output ../platform/web/public/anomaly-stats.json
+
+      - name: Commit to platform repo if changed
+        working-directory: platform
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add web/public/anomaly-stats.json
+          if git diff --cached --quiet; then
+            echo "No changes to anomaly stats"
+          else
+            git commit -m "chore: refresh anomaly stats $(date -u +%Y-%m)"
+            git push
+          fi

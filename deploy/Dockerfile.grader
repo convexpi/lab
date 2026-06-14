@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY pyproject.toml .
+COPY src/ src/
+COPY deploy/grader_worker.py deploy/grader_worker.py
+RUN pip install --no-cache-dir -e .
+
+# Optional: install Docker CLI so the grader can launch sandboxed subcontainers.
+# Set GRADER_DOCKER_IMAGE=<this image tag> in Railway env vars to enable Docker-in-Docker mode.
+# Without it the grader falls back to a plain subprocess (less secure but functional).
+# RUN apt-get update && apt-get install -y docker.io && rm -rf /var/lib/apt/lists/*
+
+# Required env vars (set in Railway):
+#   SUPABASE_URL, SUPABASE_SERVICE_KEY, MARKET_SEED
+# Optional:
+#   MARKET_N_STOCKS, MARKET_N_DAYS, POLL_SECONDS, GRADE_TIMEOUT
+#   GRADER_DOCKER_IMAGE  — set to enable Docker sandbox isolation
+#   SENTRY_DSN           — set to enable Sentry error monitoring
+
+CMD ["python", "deploy/grader_worker.py"]

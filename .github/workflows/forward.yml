@@ -1,0 +1,31 @@
+name: Forward paper-trading
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  forward-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install convexpi-lab
+        run: pip install -e ".[deploy]"
+
+      - name: Run forward evaluator
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          MARKET_SEED_BASE:     ${{ secrets.MARKET_SEED_BASE }}
+          DISCORD_WEBHOOK_URL:  ${{ secrets.DISCORD_WEBHOOK_URL }}
+          FORWARD_WINDOW_DAYS:  "60"
+          FORWARD_N_STOCKS:     "100"
+        run: python deploy/forward_runner.py
