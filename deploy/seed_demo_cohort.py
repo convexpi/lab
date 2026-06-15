@@ -102,7 +102,59 @@ BASELINE_CODE = "# Baseline — not a real submission\nclass MyStrategy:\n    pa
 def main() -> None:
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # ── 1. Upsert cohort ─────────────────────────────────────────────────────
+    # ── 1. Ensure baseline user exists in auth.users (required for FK) ─────────
+    # Use Supabase admin API to create a synthetic auth user if not present.
+    import urllib.request, json as _json
+    admin_url = f"{SUPABASE_URL}/auth/v1/admin/users/{BASELINE_USER_ID}"
+    req = urllib.request.Request(
+        admin_url,
+        headers={
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        urllib.request.urlopen(req)
+        print("Baseline auth user already exists")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            # Create the user
+            create_req = urllib.request.Request(
+                f"{SUPABASE_URL}/auth/v1/admin/users",
+                data=_json.dumps({
+                    "id": BASELINE_USER_ID,
+                    "email": "baseline@convexpi.internal",
+                    "email_confirm": True,
+                    "user_metadata": {"display_name": "— Baseline —"},
+                }).encode(),
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(create_req)
+            print("Created baseline auth user")
+        else:
+            raise
+
+    # ── 2. Ensure baseline profile exists ────────────────────────────────────
+    profile_check = (
+        sb.table("profiles").select("id").eq("id", BASELINE_USER_ID).execute()
+    )
+    if not profile_check.data:
+        sb.table("profiles").insert(
+            {
+                "id": BASELINE_USER_ID,
+                "username": "baseline",
+                "display_name": "— Baseline —",
+            }
+        ).execute()
+        print("Created baseline profile")
+
+    # ── 3. Upsert cohort ─────────────────────────────────────────────────────
     existing = (
         sb.table("cohorts").select("id").eq("slug", DEMO_SLUG).execute()
     )
@@ -110,7 +162,6 @@ def main() -> None:
         cohort_id = existing.data[0]["id"]
         print(f"Cohort already exists: {DEMO_SLUG} ({cohort_id})")
     else:
-        # Service key bypasses RLS — we need a valid owner_id; use the baseline user
         result = (
             sb.table("cohorts")
             .insert(
@@ -129,21 +180,7 @@ def main() -> None:
         cohort_id = result.data[0]["id"]
         print(f"Created cohort: {DEMO_SLUG} ({cohort_id})")
 
-    # ── 2. Ensure baseline profile exists ────────────────────────────────────
-    profile_check = (
-        sb.table("profiles").select("id").eq("id", BASELINE_USER_ID).execute()
-    )
-    if not profile_check.data:
-        sb.table("profiles").insert(
-            {
-                "id": BASELINE_USER_ID,
-                "username": "baseline",
-                "display_name": "— Baseline —",
-            }
-        ).execute()
-        print("Created baseline profile")
-
-    # ── 3. Insert baseline submissions + grade reports ────────────────────────
+    # ── 4. Insert baseline submissions + grade reports ────────────────────────
     now = datetime.now(timezone.utc).isoformat()
     for b in BASELINES:
         sub_id = b["sub_id"]
