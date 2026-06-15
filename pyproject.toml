@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "convexpi-lab"
-version = "0.1.1"
+version = "0.1.2"
 description = "ConvexPi Lab — synthetic equity panel, backtester, and anti-overfitting grader"
 readme = "README.md"
 license = { text = "MIT" }
