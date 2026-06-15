@@ -274,6 +274,34 @@ _FRENCH_MONTHLY_URLS = {
 }
 
 
+def _parse_french_monthly_csv(text: str) -> dict:
+    """Parse French monthly CSV (6-digit YYYYMM dates) into {YYYYMM: {col: val}}."""
+    rows: dict = {}
+    lines = text.splitlines()
+    header: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = [p.strip() for p in stripped.split(",")]
+        if parts[0].isdigit() and len(parts[0]) == 6:
+            if not header:
+                continue  # no header yet, skip
+            row_data = {}
+            for col, val in zip(header, parts[1:]):
+                try:
+                    row_data[col] = float(val)
+                except ValueError:
+                    pass
+            rows[parts[0]] = row_data
+        else:
+            # Candidate header: non-blank columns after the first empty field
+            cols = [c for c in parts if c]
+            if cols:
+                header = cols
+    return rows
+
+
 def _load_monthly_factors() -> dict[str, dict[str, float]]:
     """Load all monthly French factors into {factor_col: {YYYYMM: return_pct}}."""
     import io
@@ -298,11 +326,10 @@ def _load_monthly_factors() -> dict[str, dict[str, float]]:
             except Exception:
                 continue
 
-        parsed = FrenchFactorData._parse_french_csv(raw)
+        parsed = _parse_french_monthly_csv(raw)
         for date_key, row in parsed.items():
-            if len(date_key) == 6:  # monthly: YYYYMM
-                for col, val in row.items():
-                    result.setdefault(col, {})[date_key] = val
+            for col, val in row.items():
+                result.setdefault(col, {})[date_key] = val
 
     return result
 

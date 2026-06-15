@@ -18,7 +18,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# Ensure this repo's src takes precedence; strip any other convexpi installs
+_src = str(Path(__file__).parent.parent / "src")
+sys.path = [_src] + [p for p in sys.path if "convexpi" not in p and "aiinfinance" not in p]
 
 from convexpi.lab.anomalies import compute_all
 
