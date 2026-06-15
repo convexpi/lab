@@ -144,8 +144,10 @@ class SyntheticMarket:
         train_frac: float = 0.70,
         tc_bps: float = 10.0,
         seed: int = 42,
+        *,
+        n_assets: Optional[int] = None,  # alias for n_stocks
     ):
-        self.n_stocks = n_stocks
+        self.n_stocks = n_assets if n_assets is not None else n_stocks
         self.n_days = n_days
         self.n_factors = min(n_factors, 5)
         self.planted_alphas = planted_alphas if planted_alphas is not None else _default_alphas()
@@ -158,6 +160,10 @@ class SyntheticMarket:
         self._alpha_returns: Optional[np.ndarray] = None
 
         self._generate()
+
+    @property
+    def n_assets(self) -> int:
+        return self.n_stocks
 
     # ------------------------------------------------------------------
     # Public accessors
