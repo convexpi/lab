@@ -135,6 +135,7 @@ class BacktestResult:
         """Fraction of days with positive portfolio return."""
         return float((self.daily_returns > 0).mean())
 
+    @property
     def cumulative_returns(self) -> np.ndarray:
         return np.cumprod(1 + self.daily_returns) - 1
 
@@ -247,6 +248,70 @@ class Backtest:
             tc_bps=self.tc_bps,
             rebalance_every=self.rebalance_every,
             warmup_days=warmup,
+        )
+
+
+# ---------------------------------------------------------------------------
+# SimpleBacktest — beginner-friendly backtester using predict() pattern
+# ---------------------------------------------------------------------------
+
+class SimpleBacktest:
+    """
+    Beginner-friendly backtester for strategies that implement::
+
+        def predict(self, features: np.ndarray) -> np.ndarray:
+            # features shape: (n_assets, n_features)
+            # return: score array shape (n_assets,), higher = more bullish
+
+    The backtester ranks scores, goes long the top top_k and short
+    the bottom top_k, applies transaction costs, and records daily P&L.
+
+    Parameters
+    ----------
+    market : SyntheticMarket
+    strategy : object with predict(features) method
+    top_k : int
+        Number of stocks in each leg (long and short).
+    transaction_cost_bps : float
+        One-way transaction cost in basis points.
+    """
+
+    def __init__(self, market, strategy, top_k: int = 20, transaction_cost_bps: float = 10.0):
+        self.market = market
+        self.strategy = strategy
+        self.top_k = top_k
+        self.tc_bps = transaction_cost_bps / 10000.0
+
+    def run(self, split: str = "train") -> BacktestResult:
+        prices = self.market.prices(split)            # (T, N)
+        feats = self.market.features_array(split)    # (T, N, F)
+        T, N = prices.shape
+
+        daily_returns = np.zeros(T - 1)
+        weights_hist = np.zeros((T, N))
+        prev_w = np.zeros(N)
+
+        for t in range(1, T):
+            scores = self.strategy.predict(feats[t - 1])  # (N,)
+            order = np.argsort(scores)
+            w = np.zeros(N)
+            w[order[-self.top_k:]] = 1.0 / self.top_k
+            w[order[:self.top_k]] = -1.0 / self.top_k
+
+            turnover = np.abs(w - prev_w).sum()
+            tc = turnover * self.tc_bps
+            ret = prices[t] / prices[t - 1] - 1
+            daily_returns[t - 1] = float((w * ret).sum()) - tc
+
+            weights_hist[t] = w
+            prev_w = w
+
+        return BacktestResult(
+            daily_returns=daily_returns,
+            weights=weights_hist,
+            tc_bps=self.tc_bps * 10000,
+            rebalance_every=1,
+            warmup_days=0,
         )
 
 

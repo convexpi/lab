@@ -194,6 +194,11 @@ class SyntheticMarket:
         """
         return {k: self._split(v, split) for k, v in self._features.items()}
 
+    def features_array(self, split: str = "train") -> np.ndarray:
+        """Stacked feature array (n_days_split, n_stocks, n_features) in FEATURE_NAMES order."""
+        d = self.features(split)
+        return np.stack([d[name] for name in self.FEATURE_NAMES], axis=-1)
+
     def alpha_returns(self) -> np.ndarray:
         """
         GRADER ONLY — the planted alpha contribution to each stock's daily return.
@@ -223,11 +228,11 @@ class SyntheticMarket:
     def _split(self, arr: np.ndarray, split: str) -> np.ndarray:
         if split == "train":
             return arr[:self.train_end]
-        if split == "test":
+        if split in ("test", "holdout"):
             return arr[self.train_end:]
         if split == "all":
             return arr
-        raise ValueError(f"split must be 'train' | 'test' | 'all', got '{split}'")
+        raise ValueError(f"split must be 'train' | 'test' | 'holdout' | 'all', got '{split}'")
 
     def _generate(self):
         rng = self.rng

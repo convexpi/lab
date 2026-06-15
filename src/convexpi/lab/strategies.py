@@ -358,11 +358,13 @@ class MultiFactorRank(Strategy):
         weights: Optional[list[float]] = None,
         quintile_frac: float = 0.20,
         invert: Optional[list[str]] = None,
+        long_only: bool = False,
     ):
         self.signals  = signals or ["mom_12m", "val_bm", "qual_roe"]
         self.weights  = weights or [1.0] * len(self.signals)
         self.quintile_frac = quintile_frac
         self.invert   = set(invert or [])
+        self.long_only = long_only
 
     def on_day(self, day, features, prices, portfolio):
         n = len(prices)
@@ -375,7 +377,7 @@ class MultiFactorRank(Strategy):
             composite += w * z
         total_w = sum(abs(w) for w in self.weights)
         composite /= (total_w + 1e-9)
-        return _ls_weights(composite, self.quintile_frac)
+        return _ls_weights(composite, self.quintile_frac, long_only=self.long_only)
 
 
 class ICWeightedComposite(Strategy):
