@@ -2,7 +2,7 @@
 Seed a public demo competition cohort with baseline submission rows.
 
 Usage:
-    SUPABASE_URL=https://xxx.supabase.co \
+    NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co \
     SUPABASE_SERVICE_KEY=eyJ... \
     python deploy/seed_demo_cohort.py
 
@@ -23,7 +23,7 @@ try:
 except ImportError:
     sys.exit("Install supabase-py: pip install supabase")
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_URL = os.environ["NEXT_PUBLIC_SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 
 DEMO_SLUG = "demo-fall-2026"

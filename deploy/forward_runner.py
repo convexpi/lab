@@ -9,8 +9,8 @@ Run once per day (cron, Railway cron service, or GitHub Actions schedule):
     python deploy/forward_runner.py
 
 Required env vars (same as grader_worker):
-    SUPABASE_URL         — your project URL
-    SUPABASE_SERVICE_KEY — service role key (bypasses RLS)
+    NEXT_PUBLIC_SUPABASE_URL — your project URL
+    SUPABASE_SERVICE_KEY     — service role key (bypasses RLS)
     MARKET_SEED_BASE     — integer base seed (default 1000); daily seed = base + days_since_epoch
 
 Optional:
@@ -43,7 +43,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("forward_runner")
 
-SUPABASE_URL    = os.environ["SUPABASE_URL"]
+SUPABASE_URL    = os.environ["NEXT_PUBLIC_SUPABASE_URL"]
 SUPABASE_KEY    = os.environ["SUPABASE_SERVICE_KEY"]
 SEED_BASE       = int(os.environ.get("MARKET_SEED_BASE", "1000"))
 WINDOW_DAYS     = int(os.environ.get("FORWARD_WINDOW_DAYS", "60"))

@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir .
 # RUN apt-get update && apt-get install -y docker.io && rm -rf /var/lib/apt/lists/*
 
 # Required env vars (set in Railway):
-#   SUPABASE_URL, SUPABASE_SERVICE_KEY, MARKET_SEED
+#   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_KEY, MARKET_SEED
 # Optional:
 #   MARKET_N_STOCKS, MARKET_N_DAYS, POLL_SECONDS, GRADE_TIMEOUT
 #   GRADER_DOCKER_IMAGE  — set to enable Docker sandbox isolation
