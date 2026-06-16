@@ -51,7 +51,7 @@ import numpy as np
 # Cache directory
 # ---------------------------------------------------------------------------
 
-_CACHE_DIR = Path(os.environ.get("OPENQUANT_CACHE", Path.home() / ".convexpi" / "data"))
+_CACHE_DIR = Path(os.environ.get("CONVEXPI_CACHE", Path.home() / ".convexpi" / "data"))
 
 
 def _cache_path(name: str) -> Path:
