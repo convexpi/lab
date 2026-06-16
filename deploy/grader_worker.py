@@ -5,8 +5,8 @@ Deploy as a separate Railway service (same Docker image, different start command
     python deploy/grader_worker.py
 
 Required env vars:
-    SUPABASE_URL         — your project URL
-    SUPABASE_SERVICE_KEY — service role key (bypasses RLS)
+    NEXT_PUBLIC_SUPABASE_URL — your project URL (same var as the web platform)
+    SUPABASE_SERVICE_KEY     — service role key (bypasses RLS)
     MARKET_SEED          — integer seed for the hidden market (keep private)
     MARKET_N_STOCKS      — default 200
     MARKET_N_DAYS        — default 1260
@@ -65,7 +65,7 @@ logging.basicConfig(
 log = logging.getLogger("grader")
 
 
-SUPABASE_URL    = os.environ["SUPABASE_URL"]
+SUPABASE_URL    = os.environ["NEXT_PUBLIC_SUPABASE_URL"]
 SUPABASE_KEY    = os.environ["SUPABASE_SERVICE_KEY"]
 MARKET_SEED     = int(os.environ.get("MARKET_SEED", "42"))
 N_STOCKS        = int(os.environ.get("MARKET_N_STOCKS", "200"))
