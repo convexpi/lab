@@ -22,9 +22,9 @@ jobs:
 
       - name: Run forward evaluator
         env:
-          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          MARKET_SEED_BASE:     ${{ secrets.MARKET_SEED_BASE }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:     ${{ secrets.SUPABASE_SERVICE_KEY }}
+          MARKET_SEED_BASE:         ${{ secrets.MARKET_SEED_BASE }}
           DISCORD_WEBHOOK_URL:  ${{ secrets.DISCORD_WEBHOOK_URL }}
           FORWARD_WINDOW_DAYS:  "60"
           FORWARD_N_STOCKS:     "100"

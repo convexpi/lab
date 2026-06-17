@@ -1,0 +1,23 @@
+# Railway configuration for the ConvexPi grader service.
+# Deploy this repo as a Railway service; Railway reads this file automatically.
+#
+# Required env vars (set in Railway dashboard → Variables):
+#   NEXT_PUBLIC_SUPABASE_URL  — Supabase project URL
+#   SUPABASE_SERVICE_KEY      — Service role key (bypasses RLS)
+#   MARKET_SEED               — Secret integer seed for the hidden OOS market
+#
+# Optional:
+#   MARKET_N_STOCKS           — default 200
+#   MARKET_N_DAYS             — default 1260
+#   POLL_SECONDS              — default 5
+#   GRADE_TIMEOUT             — default 60
+#   DISCORD_WEBHOOK_URL       — post grade results to a Discord channel
+#   SENTRY_DSN                — error monitoring
+
+[build]
+dockerfilePath = "deploy/Dockerfile.grader"
+
+[deploy]
+startCommand = "python deploy/grader_worker.py"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

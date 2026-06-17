@@ -33,7 +33,7 @@ jobs:
 
       - name: Compute anomaly stats
         working-directory: lab
-        run: python deploy/compute_anomaly_stats.py --output ../platform/web/public/anomaly-stats.json
+        run: python deploy/compute_anomaly_stats.py --out ../platform/web/public/anomaly-stats.json
 
       - name: Commit to platform repo if changed
         working-directory: platform
