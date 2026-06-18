@@ -58,7 +58,7 @@ def make_submission(code: str = VALID_STRATEGY) -> dict:
 @pytest.fixture(autouse=True)
 def env_vars(monkeypatch):
     """Set required env vars so the module can be imported."""
-    monkeypatch.setenv("SUPABASE_URL", "https://fake.supabase.co")
+    monkeypatch.setenv("NEXT_PUBLIC_SUPABASE_URL", "https://fake.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "fake-service-key")
     monkeypatch.setenv("MARKET_SEED", "99")
     monkeypatch.setenv("MARKET_N_STOCKS", "80")   # small market for speed
