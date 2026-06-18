@@ -29,11 +29,21 @@ jobs:
 
       - name: Install convexpi-lab
         working-directory: lab
-        run: pip install -e ".[dev]" --quiet
+        run: pip install -e ".[dev]" --quiet && pip install gdown numpy --quiet
 
-      - name: Compute anomaly stats
+      # Cache OSAP CSVs by release year to avoid re-downloading every month.
+      # Bump the key suffix (e.g. osap-2026) when OSAP publishes a new release.
+      - name: Cache OSAP data files
+        uses: actions/cache@v4
+        with:
+          path: ~/.convexpi/cache
+          key: osap-2025
+
+      - name: Expand anomaly stats (French + OSAP)
         working-directory: lab
-        run: python deploy/compute_anomaly_stats.py --out ../platform/web/public/anomaly-stats.json
+        env:
+          OSAP_CACHE_DIR: ~/.convexpi/cache
+        run: python deploy/expand_anomalies.py --out ../platform/web/public/anomaly-stats.json
 
       - name: Commit to platform repo if changed
         working-directory: platform
