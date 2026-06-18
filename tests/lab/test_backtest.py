@@ -113,7 +113,7 @@ class TestBacktestResultMetrics:
 
     def test_cumulative_returns_shape(self):
         r = self._result([0.01, 0.02, -0.01])
-        cum = r.cumulative_returns()
+        cum = r.cumulative_returns
         assert len(cum) == 3
 
 
