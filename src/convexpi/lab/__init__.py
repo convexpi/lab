@@ -21,6 +21,7 @@ from .backtest import (
     CombinedSignal,
 )
 from .grader import Grader, GradeReport, AlphaDiscovery
+from .submit import submit, SubmitError
 from .real_data import RealDataMarket, FrenchFactorData, FredSeries, fetch_prices
 from .anomalies import compute_all as compute_anomaly_stats, AnomalySpec, _CATALOGUE as ANOMALY_CATALOGUE
 from .strategies import (
@@ -62,4 +63,6 @@ __all__ = [
     "SyntheticMarket",
     "fetch_prices",
     "SimpleBacktest",
+    "submit",
+    "SubmitError",
 ]
