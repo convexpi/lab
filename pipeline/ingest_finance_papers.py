@@ -216,27 +216,38 @@ async def fetch_arxiv_by_id(client: httpx.AsyncClient, arxiv_id: str) -> dict | 
 async def enrich_from_s2(
     client: httpx.AsyncClient,
     arxiv_id: str,
+    max_retries: int = 3,
 ) -> dict:
     headers = {"x-api-key": S2_API_KEY} if S2_API_KEY else {}
     url = f"{S2_API}/paper/arXiv:{arxiv_id}?fields={S2_FIELDS}"
-    try:
-        resp = await client.get(url, headers=headers, timeout=20)
-        if resp.status_code == 404:
-            return {}
-        resp.raise_for_status()
-        data = resp.json()
-        oa_pdf = (data.get("openAccessPdf") or {}).get("url")
-        doi = (data.get("externalIds") or {}).get("DOI")
-        venue = data.get("publicationVenue") or {}
-        return {
-            "doi":             doi,
-            "citation_count":  data.get("citationCount"),
-            "is_open_access":  data.get("isOpenAccess", False),
-            "open_access_url": oa_pdf,
-            "journal":         venue.get("name") or data.get("venue"),
-        }
-    except httpx.HTTPError:
-        return {}
+    delay = 3.0 if not S2_API_KEY else 0.5  # unauth limit ~1 req/3s
+    for attempt in range(max_retries):
+        try:
+            resp = await client.get(url, headers=headers, timeout=20)
+            if resp.status_code == 404:
+                return {}
+            if resp.status_code == 429:
+                wait = delay * (2 ** attempt)
+                log.debug("S2 rate limited, sleeping %.1fs", wait)
+                await asyncio.sleep(wait)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            oa_pdf = (data.get("openAccessPdf") or {}).get("url")
+            doi = (data.get("externalIds") or {}).get("DOI")
+            venue = data.get("publicationVenue") or {}
+            return {
+                "doi":             doi,
+                "citation_count":  data.get("citationCount"),
+                "is_open_access":  data.get("isOpenAccess", False),
+                "open_access_url": oa_pdf,
+                "journal":         venue.get("name") or data.get("venue"),
+            }
+        except httpx.HTTPError:
+            if attempt == max_retries - 1:
+                return {}
+            await asyncio.sleep(delay)
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +356,8 @@ async def ingest_topic(
             if s2_enrich and p.get("arxiv_id"):
                 s2 = await enrich_from_s2(client, p["arxiv_id"])
                 p.update({k: v for k, v in s2.items() if v is not None})
-                await asyncio.sleep(0.1)  # S2 rate limit
+                # enrich_from_s2 already sleeps on 429; add a base inter-request gap
+                await asyncio.sleep(3.0 if not S2_API_KEY else 0.5)
 
             enriched.append(p)
 
