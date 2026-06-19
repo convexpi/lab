@@ -81,12 +81,15 @@ TOPIC_QUERIES: dict[str, list[tuple[str, list[str]]]] = {
     "size": [
         ("cat:q-fin.PM AND all:size effect small cap equity premium", ["size"]),
     ],
+    # Factor-zoo / replication papers. Prefer q-fin categories; the econ.GN
+    # category is broad and noisy, so keep those queries tightly scoped to
+    # asset-pricing terms (the is_finance_relevant gate also filters leakage).
     "factor_zoo": [
-        ("cat:econ.GN AND all:factor zoo multiple testing p-hacking", ["meta"]),
-        ("cat:econ.GN AND all:anomaly replication out-of-sample decay", ["meta"]),
+        ("cat:q-fin.PM AND all:factor zoo multiple testing", ["meta"]),
+        ("cat:q-fin.PM AND all:anomaly replication out-of-sample decay", ["meta"]),
         ("cat:q-fin.PM AND all:cross-sectional return predictability replication", ["meta"]),
-        ("cat:econ.GN AND all:data mining spurious factor alpha", ["meta"]),
-        ("cat:econ.GN AND all:McLean Pontiff publication anomaly decay", ["meta"]),
+        ("cat:q-fin.ST AND all:data mining spurious factor return", ["meta"]),
+        ("cat:q-fin.PM AND all:publication bias anomaly decay stock return", ["meta"]),
     ],
     "market_microstructure": [
         ("cat:q-fin.TR AND all:limit order book market maker", ["microstructure"]),
@@ -123,6 +126,38 @@ _KEYWORD_MAP: list[tuple[list[str], list[str]]] = [
       "gradient boost", "XGBoost", "LSTM"],                         ["ml_finance"]),
     (["option", "volatility surface", "VIX", "implied vol"],         ["options"]),
 ]
+
+
+# Finance-relevance gate. The econ.GN category (General Economics) is broad,
+# and arXiv's multi-term `all:` queries match loosely, so non-finance papers
+# (homelessness, clinical trials, traffic) leak in. Every ingested paper must
+# contain at least one of these asset-pricing / markets terms to be kept.
+_FINANCE_TERMS = [
+    # Equities / asset pricing
+    "stock", "equity", "equities", "return", "returns", "portfolio",
+    "asset pricing", "asset-pricing", "asset price", "factor", "anomaly", "anomalies",
+    "alpha", "sharpe", "cross-section", "cross section",
+    "volatility", "risk premium", "risk-premium", "hedge",
+    "investor", "securit", "price predictab", "expected return",
+    "momentum", "value premium", "book-to-market", "book to market",
+    "firm characteristic",
+    # Trading / microstructure
+    "trading", "trade", "limit order", "bid-ask", "market impact",
+    "market mak", "order flow", "ohlc", "high frequency",
+    # Derivatives
+    "option", "derivative", "implied vol", "volatility surface",
+    # Other asset classes that are still quant-finance
+    "credit spread", "credit rating", "bond", "fixed income", "yield curve",
+    "bitcoin", "crypto", "defi", "exchange rate", "currency",
+    # General markets vocabulary
+    "financial market", "stock market", "equity market",
+]
+
+
+def is_finance_relevant(title: str, abstract: str) -> bool:
+    """Drop papers with no asset-pricing / markets vocabulary."""
+    combined = (title + " " + abstract).lower()
+    return any(term in combined for term in _FINANCE_TERMS)
 
 
 def classify_topics(title: str, abstract: str) -> list[str]:
@@ -346,7 +381,13 @@ async def ingest_topic(
         log.info("  → %d papers from arXiv", len(papers))
 
         enriched = []
+        skipped = 0
         for p in papers:
+            # Finance-relevance gate — drop econ.GN noise
+            if not is_finance_relevant(p["title"], p.get("abstract", "")):
+                skipped += 1
+                continue
+
             # Classifier may add more topics beyond the query's base_topics
             classifier_topics = classify_topics(p["title"], p.get("abstract", ""))
             p["topics"] = sorted(set(base_topics) | set(classifier_topics))
@@ -361,6 +402,8 @@ async def ingest_topic(
 
             enriched.append(p)
 
+        if skipped:
+            log.info("  → skipped %d non-finance papers (relevance gate)", skipped)
         count = await upsert_papers_supabase(enriched, dry_run=dry_run)
         total += count
         log.info("  → upserted %d new papers for topic %r", count, topic)
