@@ -1,19 +1,23 @@
 # ConvexPi Literature Pipeline
 
 Ports the DoOperator research pipeline to finance papers. Ingests arXiv q-fin
-papers, optionally downloads full text, generates LLM wikis, and pushes them
-to Supabase.
+papers, downloads and keeps their PDFs, generates LLM wikis (extracting PDF text
+in real time), and pushes them to Supabase + the convexpi/content repo.
 
 ## Data layout
 
 ```
 CONVEXPI_DATA_DIR  (default: /Users/smc77/convexpi-data — outside Dropbox)
 ├── cache/          # OSAP and other downloaded data files
-├── fulltext/       # Plain-text extractions of downloaded PDFs
-├── pdf/            # Downloaded PDFs (large — keep off Dropbox)
+├── pdf/            # Downloaded arXiv PDFs — source of truth, kept on disk
+├── fulltext/       # (optional) pre-extracted text cache, honoured if present
 ├── wiki/           # Generated markdown wiki files (pushed to Supabase)
 └── wiki_index.json # Hash index to skip unchanged wikis
 ```
+
+Text is extracted from the PDFs **on demand** at wiki-generation time
+(PyMuPDF), so there's no bulk extraction step to keep in sync. Every paper is on
+arXiv, so each PDF is also viewable at `https://arxiv.org/abs/{arxiv_id}`.
 
 ## Env vars
 
@@ -37,7 +41,20 @@ python pipeline/ingest_finance_papers.py --topic momentum --limit 500
 python pipeline/ingest_finance_papers.py --dry-run    # preview without writing
 ```
 
-### 2. Generate wikis
+### 2. Download PDFs
+
+```bash
+python pipeline/download_pdfs.py                       # all papers missing a PDF
+python pipeline/download_pdfs.py --topic momentum
+python pipeline/download_pdfs.py --force               # re-download existing
+```
+
+Downloads each paper's arXiv PDF to `CONVEXPI_DATA_DIR/pdf/{arxiv_id}.pdf` and
+keeps it. Text is extracted in real time during wiki generation — no separate
+extraction step. Optional: wikis generate fine from the abstract alone if you
+skip this step.
+
+### 3. Generate wikis
 
 ```bash
 python pipeline/generate_factor_wiki.py               # all papers without wikis
@@ -45,7 +62,10 @@ python pipeline/generate_factor_wiki.py --topic meta --limit 20
 python pipeline/generate_factor_wiki.py --model sonnet # use Claude Sonnet
 ```
 
-### 3. Publish to convexpi/content (and optionally Supabase)
+Extracts text from each paper's PDF (in `pdf/{arxiv_id}.pdf`) at generation
+time, falling back to the abstract when no PDF is present.
+
+### 4. Publish to convexpi/content (and optionally Supabase)
 
 ```bash
 # Commit and push wikis + index.json to convexpi/content

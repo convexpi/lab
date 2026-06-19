@@ -61,4 +61,5 @@ __all__ = [
     "Strategy",
     "SyntheticMarket",
     "fetch_prices",
+    "SimpleBacktest",
 ]

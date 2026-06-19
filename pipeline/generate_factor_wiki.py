@@ -55,6 +55,8 @@ import httpx
 
 DATA_DIR  = Path(os.environ.get("CONVEXPI_DATA_DIR", "/Users/smc77/convexpi-data"))
 WIKI_DIR  = DATA_DIR / "wiki"
+PDF_DIR   = DATA_DIR / "pdf"
+FULLTEXT_DIR = DATA_DIR / "fulltext"   # optional pre-extracted text cache
 INDEX_PATH = DATA_DIR / "wiki_index.json"
 
 SUPABASE_URL         = os.environ.get("SUPABASE_URL", "")
@@ -344,17 +346,51 @@ async def fetch_papers_without_wiki(
 
 
 # ---------------------------------------------------------------------------
-# Load full text from disk (written by fetch_full_text.py) or fall back to abstract
+# Load full text — extract from the on-disk arXiv PDF in real time.
+#
+# PDFs are downloaded (and kept) by download_pdfs.py to PDF_DIR/{arxiv_id}.pdf.
+# We extract text lazily here, at generation time, so there's no separate bulk
+# extraction step and no large derived text store to keep in sync. A pre-built
+# FULLTEXT_DIR cache is still honoured if present (cheap win on re-runs).
+# Falls back to the abstract when no PDF is available.
 # ---------------------------------------------------------------------------
+
+_MAX_FULLTEXT_CHARS = 60_000  # ~15k tokens — plenty for a wiki, keeps cost sane
+
+
+def _extract_pdf_text(pdf_path: Path) -> str:
+    try:
+        import fitz  # PyMuPDF — imported lazily so the abstract path needs no dep
+    except ImportError:
+        return ""
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception:
+        return ""
+    parts = [page.get_text("text") for page in doc]
+    doc.close()
+    return "\n".join(parts).strip()
+
 
 def load_full_text(paper: dict) -> str:
     paper_id = paper["id"]
-    # Try saved full-text file first
+
+    # 1. Honour a pre-extracted text cache if one happens to exist.
     for ext in (".txt", ".md"):
-        p = DATA_DIR / "fulltext" / f"{paper_id}{ext}"
-        if p.exists():
-            return p.read_text(encoding="utf-8", errors="replace")[:20_000]
-    # Fall back to abstract
+        cached = FULLTEXT_DIR / f"{paper_id}{ext}"
+        if cached.exists():
+            return cached.read_text(encoding="utf-8", errors="replace")[:_MAX_FULLTEXT_CHARS]
+
+    # 2. Extract from the on-disk PDF in real time.
+    arxiv_id = paper.get("arxiv_id")
+    if arxiv_id:
+        pdf_path = PDF_DIR / f"{arxiv_id}.pdf"
+        if pdf_path.exists():
+            text = _extract_pdf_text(pdf_path)
+            if len(text) >= 500:
+                return text[:_MAX_FULLTEXT_CHARS]
+
+    # 3. Fall back to the abstract.
     return paper.get("abstract") or ""
 
 
