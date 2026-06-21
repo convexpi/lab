@@ -125,6 +125,16 @@ _KEYWORD_MAP: list[tuple[list[str], list[str]]] = [
     (["machine learn", "neural net", "deep learn", "random forest",
       "gradient boost", "XGBoost", "LSTM"],                         ["ml_finance"]),
     (["option", "volatility surface", "VIX", "implied vol"],         ["options"]),
+    (["deep learning", "neural network", "convolutional", "recurrent",
+      "lstm", "transformer", "attention", "autoencoder"],          ["deep_learning"]),
+    (["large language model", "llm", "gpt", "chatgpt", "bert",
+      "foundation model", "generative ai", "retrieval-augmented"],  ["llm"]),
+    (["sentiment", "textual analysis", "text mining", "natural language",
+      "nlp", "news", "earnings call", "10-k", "10-q", "embedding"],  ["nlp_text"]),
+    (["reinforcement learning", "q-learning", "policy gradient",
+      "actor-critic", "deep hedging", "optimal execution"],         ["reinforcement_learning"]),
+    (["fairness", "discrimination", "disparate impact", "interpretab",
+      "explainab", "model risk", "regulation", "governance"],       ["governance"]),
 ]
 
 

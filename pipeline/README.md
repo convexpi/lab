@@ -41,12 +41,35 @@ python pipeline/ingest_finance_papers.py --topic momentum --limit 500
 python pipeline/ingest_finance_papers.py --dry-run    # preview without writing
 ```
 
+### 1b. Other ingestion sources
+
+The DB is fed from several complementary discovery sources (all free/open; dedup by DOI; same
+finance-relevance gate + topic classifier reused throughout). Every script supports `--dry-run`,
+which previews kept counts and touches neither Supabase nor any key.
+
+```bash
+python pipeline/seed_osap_papers.py          # canonical anomaly-defining journal papers (OSAP → Crossref + OpenAlex)
+python pipeline/ingest_openalex_journals.py  # breadth from top finance/accounting + econ journals (OpenAlex by ISSN)
+python pipeline/ingest_ml_venues.py          # AI/ML venues: ICAIF (via DBLP) + NeurIPS/ICML/ICLR/KDD/EMNLP/ACL/AAAI (OpenAlex), finance-gated
+python pipeline/ingest_working_papers.py     # working papers: NBER + Fed FEDS/IFDP (OpenAlex); RePEc/NEP stub
+python pipeline/expand_citations.py          # citation-graph snowballing from seed papers (Semantic Scholar refs/citations)
+```
+
+- **`ingest_ml_venues.py`** — discovers by OpenAlex venue id; general ML venues require a *strong*
+  finance term (so RL/CV papers that merely say "option"/"reward" are dropped). ICAIF has no OpenAlex
+  venue, so it is pulled from DBLP (`stream:conf/icaif:`) and enriched via OpenAlex by DOI.
+- **`ingest_working_papers.py`** — OpenAlex by source id; rows tagged `is_preprint=True`. BIS/ECB/CEPR
+  are not OpenAlex sources (left for the RePEc/NEP path, currently stubbed).
+- **`expand_citations.py`** — from canonical seeds (or high-quality DB papers), keeps finance-relevant
+  references/citations not already present; `source="semanticscholar"`.
+
 ### 2. Download PDFs
 
 ```bash
 python pipeline/download_pdfs.py                       # all papers missing a PDF
 python pipeline/download_pdfs.py --topic momentum
 python pipeline/download_pdfs.py --force               # re-download existing
+python pipeline/download_pdfs.py --include-oa          # also fetch OA PDFs for DOI-only (non-arXiv) papers via Unpaywall
 ```
 
 Downloads each paper's arXiv PDF to `CONVEXPI_DATA_DIR/pdf/{arxiv_id}.pdf` and

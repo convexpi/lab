@@ -74,6 +74,17 @@ JOURNAL_WHITELIST: dict[str, str] = {
     "JAE":     "0165-4101",   # Journal of Accounting and Economics
     "JAR":     "0021-8456",   # Journal of Accounting Research
     "RAS":     "1380-6653",   # Review of Accounting Studies
+    "RAPS":    "2045-9920",   # Review of Asset Pricing Studies
+    "RCFS":    "2046-9128",   # Review of Corporate Finance Studies
+    "JBF":     "0378-4266",   # Journal of Banking & Finance
+    "QF":      "1469-7688",   # Quantitative Finance
+    "JFDS":    "2640-3943",   # Journal of Financial Data Science
+    # Broad econ journals — the relevance gate keeps only asset-pricing/finance papers.
+    "AER":     "0002-8282",   # American Economic Review
+    "JPE":     "0022-3808",   # Journal of Political Economy
+    "QJE":     "0033-5533",   # Quarterly Journal of Economics
+    "ECMA":    "0012-9682",   # Econometrica
+    "REStud":  "0034-6527",   # Review of Economic Studies
 }
 
 
