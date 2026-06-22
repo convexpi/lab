@@ -63,6 +63,25 @@ python pipeline/expand_citations.py          # citation-graph snowballing from s
 - **`expand_citations.py`** — from canonical seeds (or high-quality DB papers), keeps finance-relevant
   references/citations not already present; `source="semanticscholar"`.
 
+### 1c. Curate for finance relevance (run after any ingest)
+
+The per-ingest gate is a loose single-term match, so famous non-finance papers leak in via the
+citation graph (e.g. AlphaFold, LIME) and the econ-journal breadth (macro/labor/development papers
+from AER/QJE/JPE). They then dominate the library because they carry enormous citation counts. This
+pass re-grades the whole corpus with a stricter, journal-class-first classifier and flips off-topic
+rows to `curation_status='rejected'` (the site only shows `candidate`/`approved`). **Run it after
+every ingest.**
+
+```bash
+python pipeline/curate_relevance.py --dry-run   # report rejects, with top-cited samples to sanity-check
+python pipeline/curate_relevance.py             # apply: candidate -> rejected for off-topic papers
+python pipeline/curate_relevance.py --revive     # also restore rejected rows that now pass
+```
+
+Finance + accounting journals and ICAIF/arXiv-q-fin are kept wholesale; econ journals, general ML
+venues, and un-journalled citation-graph rows are kept only with a finance signal and no
+disqualifying domain. Never touches `approved` rows.
+
 ### 2. Download PDFs
 
 ```bash
