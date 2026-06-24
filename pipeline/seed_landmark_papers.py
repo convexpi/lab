@@ -51,6 +51,13 @@ LANDMARKS = [
     ("Generalized autoregressive conditional heteroskedasticity", "Bollerslev", 1986, ["low_volatility"]),
     ("Conditional heteroskedasticity in asset returns: A new approach", "Nelson", 1991, ["low_volatility"]),
     ("A simple positive semi-definite heteroskedasticity and autocorrelation consistent covariance matrix", "Newey", 1987, ["meta"]),
+    # Machine-learning asset-pricing landmarks (the modern canon).
+    ("Characteristics are covariances: A unified model of risk and return", "Kelly", 2019, ["meta"]),
+    ("Shrinking the cross-section", "Kozak", 2020, ["meta"]),
+    ("Dissecting characteristics nonparametrically", "Freyberger", 2020, ["meta"]),
+    ("Asset pricing with omitted factors", "Giglio", 2021, ["meta"]),
+    ("Autoencoder asset pricing models", "Gu", 2021, ["meta"]),
+    ("Forest through the trees: Building cross-sections of stock returns", "Bryzgalova", 2025, ["meta"]),
 ]
 
 
