@@ -191,7 +191,7 @@ ARENA_BOOK = {
     "type": "competition", "visibility": "public", "owner_id": BASELINE_USER_ID,
     "status": "active",
     "arena_config": {"tick_interval": 0.5, "n_ticks": None, "n_background_agents": 0, "seed": 42,
-                     "mode": "crypto_book", "crypto_book": "data/sample_btcusdt_book.jsonl",
+                     "mode": "crypto_book", "crypto_book": "data/btcusd_book.jsonl",
                      "maker_fee_bps": -1.0, "taker_fee_bps": 3.0},
 }
 
