@@ -141,14 +141,16 @@ def seed_baselines(cohort_id: str, slug: str) -> None:
         print(f"  + baseline: {b['strategy_name']}")
 
 
-def ensure_arena_session(cohort_id: str, config: dict) -> None:
+def ensure_arena_session(cohort_id: str, config: dict, *, season_name: str = "Open Ladder",
+                         description: str = "Always-open live trading ladder. Connect an agent "
+                                            "and climb the PnL rankings.") -> None:
     """Ensure one active arena_sessions row exists for the cohort."""
     if rest_get("arena_sessions", f"cohort_id=eq.{cohort_id}&status=eq.active&select=id"):
         print("  arena session already active")
         return
     rest_insert("arena_sessions", {
-        "cohort_id": cohort_id, "season_name": "Open Ladder",
-        "description": "Always-open live trading ladder. Connect an agent and climb the PnL rankings.",
+        "cohort_id": cohort_id, "season_name": season_name,
+        "description": description,
         "status": "active", "config": config})
     print("  + active arena session")
 
@@ -176,6 +178,23 @@ ARENA_OPEN = {
     "arena_config": {"tick_interval": 0.5, "n_ticks": 2000, "n_background_agents": 20, "seed": 42},
 }
 
+# Real-order-book season: the Arena runs in book-replay mode against recorded L2 depth, so players
+# trade against real (or realistic) market liquidity — real slippage, real queues. The arena server
+# for this session must be launched with ARENA_CRYPTO_BOOK pointing at a depth JSONL (ship
+# arena/data/sample_btcusdt_book.jsonl, or record one with deploy/fetch_crypto_orderbook.py).
+ARENA_BOOK = {
+    "slug": "arena-book",
+    "name": "Arena — Real Order Book",
+    "description": ("A live ladder run on a real recorded limit order book. Your market orders walk "
+                    "the actual depth and pay real slippage; your limit orders queue against real "
+                    "liquidity. Connect an agent and trade like it's a real exchange."),
+    "type": "competition", "visibility": "public", "owner_id": BASELINE_USER_ID,
+    "status": "active",
+    "arena_config": {"tick_interval": 0.5, "n_ticks": None, "n_background_agents": 0, "seed": 42,
+                     "mode": "crypto_book", "crypto_book": "data/sample_btcusdt_book.jsonl",
+                     "maker_fee_bps": -1.0, "taker_fee_bps": 3.0},
+}
+
 
 def main() -> None:
     ensure_baseline_user()
@@ -186,9 +205,16 @@ def main() -> None:
     arena_id = upsert_cohort(ARENA_OPEN)
     ensure_arena_session(arena_id, ARENA_OPEN["arena_config"])
 
+    book_id = upsert_cohort(ARENA_BOOK)
+    ensure_arena_session(
+        book_id, ARENA_BOOK["arena_config"],
+        season_name="Real Order Book",
+        description="Live ladder on a real recorded limit order book — real depth, real slippage.")
+
     print("\nDone.")
-    print("  Lab:   /compete/open-leaderboard/leaderboard")
-    print("  Arena: /compete/arena-open/leaderboard")
+    print("  Lab:        /compete/open-leaderboard/leaderboard")
+    print("  Arena:      /compete/arena-open/leaderboard")
+    print("  Arena book: /compete/arena-book/leaderboard")
 
 
 if __name__ == "__main__":
