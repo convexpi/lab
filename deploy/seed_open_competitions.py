@@ -192,7 +192,9 @@ ARENA_BOOK = {
     "status": "active",
     "arena_config": {"tick_interval": 0.5, "n_ticks": None, "n_background_agents": 0, "seed": 42,
                      "mode": "crypto_book", "crypto_book": "data/btcusd_book.jsonl",
-                     "maker_fee_bps": -1.0, "taker_fee_bps": 3.0},
+                     "maker_fee_bps": -1.0, "taker_fee_bps": 3.0,
+                     # ws_url drives the public live-book view on /compete/arena-book.
+                     "ws_url": "wss://arena-production-e3f1.up.railway.app"},
 }
 
 
