@@ -40,7 +40,8 @@ jobs:
       - name: Write result back to Supabase
         if: always()
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          # lab stores the project URL as NEXT_PUBLIC_SUPABASE_URL; accept either name.
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           POST_ID: ${{ inputs.post_id }}
           BUILD_OK: ${{ steps.render.outcome }}

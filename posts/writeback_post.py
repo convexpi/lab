@@ -8,7 +8,7 @@ import json
 import os
 import urllib.request
 
-URL = os.environ["SUPABASE_URL"].rstrip("/")
+URL = (os.environ.get("SUPABASE_URL") or os.environ["NEXT_PUBLIC_SUPABASE_URL"]).rstrip("/")
 KEY = os.environ["SUPABASE_SERVICE_KEY"]
 PID = os.environ["POST_ID"]
 OK = os.environ.get("BUILD_OK") == "success"
