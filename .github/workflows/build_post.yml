@@ -1,0 +1,47 @@
+name: Build post
+# Central sandboxed worker for the project showcase. Triggered (workflow_dispatch) when someone
+# publishes a post: clone the author's repo at a pinned commit, execute + render + sanitize the
+# notebook with posts/render_post.py, and write the result back to the posts row in Supabase.
+# The GitHub runner is ephemeral and isolated; only the Supabase write key is exposed to it.
+on:
+  workflow_dispatch:
+    inputs:
+      post_id:       { description: "posts.id (uuid)", required: true }
+      repo_url:      { description: "author repo, e.g. https://github.com/user/repo", required: true }
+      ref:           { description: "commit SHA to pin", required: true }
+      notebook_path: { description: "path to the .ipynb within the repo", required: true }
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15            # hard cap on a runaway post
+    steps:
+      - name: Checkout lab (renderer)
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+
+      - name: Install render + runtime deps
+        run: |
+          pip install --no-cache-dir nbconvert nbclient nbformat bleach ipykernel \
+            numpy pandas matplotlib scipy statsmodels pandas-datareader yfinance
+
+      - name: Fetch author notebook at pinned commit
+        run: |
+          git clone --filter=blob:none "${{ inputs.repo_url }}" userrepo
+          git -C userrepo checkout "${{ inputs.ref }}"
+          test -f "userrepo/${{ inputs.notebook_path }}"
+
+      - name: Render (execute + sanitize)
+        id: render
+        run: python posts/render_post.py "userrepo/${{ inputs.notebook_path }}" --out out/
+
+      - name: Write result back to Supabase
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          POST_ID: ${{ inputs.post_id }}
+          BUILD_OK: ${{ steps.render.outcome }}
+        run: python posts/writeback_post.py
