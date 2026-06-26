@@ -10,6 +10,7 @@ market.
 | `multifactor_long_short.ipynb` | Dollar-neutral value + quality + momentum composite (the flagship long/short format) |
 | `short_term_reversal.ipynb` | Weekly mean reversion — long recent losers, short recent winners |
 | `low_volatility.ipynb` | Betting against volatility — long low-vol, short high-vol |
+| `momentum_value_survives.ipynb` | Short-horizon momentum + value — a durable edge, with an honest multi-market OOS robustness check |
 
 Publish any of them at **convexpi.ai/projects/new** by pasting its GitHub URL. Start your own from
 [`../template`](../template).
