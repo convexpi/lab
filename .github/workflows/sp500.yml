@@ -1,0 +1,23 @@
+name: S&P 500 next-day scoring
+# Score the live S&P-500 next-day prediction competition on real Yahoo prices.
+# Runs after the US close on weekdays; each run folds in the newest day (live, out-of-sample).
+on:
+  schedule:
+    - cron: "30 22 * * 1-5"     # 22:30 UTC, Mon-Fri (~after US market close)
+  workflow_dispatch:
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - name: Install
+        run: pip install --no-cache-dir numpy pandas yfinance
+      - name: Score models
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python deploy/sp500_runner.py
