@@ -89,6 +89,9 @@ def execute(nb, path: str):
 def render(nb) -> str:
     exporter = HTMLExporter(template_name="basic")   # body fragment, not a full HTML page
     body, _ = exporter.from_notebook_node(nb)
+    # nbconvert appends a "¶" heading anchor (<a class="anchor-link">) to every heading;
+    # we have no TOC, so strip them for clean headings.
+    body = re.sub(r'<a[^>]*class="anchor-link"[^>]*>.*?</a>', '', body, flags=re.DOTALL)
     return body
 
 
