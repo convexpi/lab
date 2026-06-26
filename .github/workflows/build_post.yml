@@ -25,7 +25,7 @@ jobs:
       - name: Install render + runtime deps
         run: |
           pip install --no-cache-dir nbconvert nbclient nbformat bleach ipykernel \
-            numpy pandas matplotlib scipy statsmodels pandas-datareader yfinance
+            numpy pandas matplotlib scipy statsmodels pandas-datareader yfinance convexpi-lab
 
       - name: Fetch author notebook at pinned commit
         run: |
