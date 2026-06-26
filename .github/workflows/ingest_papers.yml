@@ -1,0 +1,40 @@
+name: Literature ingestion
+
+# Keep the papers corpus fresh. The ingesters dedup by DOI/arXiv id and apply the
+# finance-relevance gate + topic classifier, so a scheduled incremental run only
+# appends genuinely new, relevant papers. Append-only; no LLM cost (wikis are a
+# separate, manual step — see pipeline/README.md).
+on:
+  schedule:
+    - cron: "0 6 * * 1"        # Mondays 06:00 UTC — weekly refresh
+  workflow_dispatch: {}
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: pipeline   # scripts import sibling modules by name
+    env:
+      SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir httpx
+
+      - name: Ingest fresh arXiv q-fin papers
+        run: python ingest_finance_papers.py --no-s2
+
+      - name: Ingest new working papers (NBER + Fed)
+        run: python ingest_working_papers.py
+
+      - name: Ingest new journal papers (OpenAlex by ISSN)
+        run: python ingest_openalex_journals.py
