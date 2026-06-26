@@ -198,6 +198,22 @@ ARENA_BOOK = {
 }
 
 
+ARENA_L3 = {
+    "slug": "arena-l3",
+    "name": "Arena — Realistic Exchange (L3)",
+    "description": ("Trade on a real order-by-order book. Your limit orders take a real place in the "
+                    "FIFO queue and only fill once they reach the front — queue position and timing "
+                    "decide everything. Run a server with ARENA_CRYPTO_L3 to feed this season."),
+    "type": "competition", "visibility": "public", "owner_id": BASELINE_USER_ID,
+    "status": "active",
+    "arena_config": {"tick_interval": 0.5, "n_ticks": None, "n_background_agents": 0, "seed": 42,
+                     "mode": "crypto_l3", "crypto_l3": "data/btcusd_l3_sample.jsonl"},
+    "market_config": {"data_description": "Order-by-order (L3) replay of a real Bitstamp BTC feed. "
+                      "Your limit orders join the real FIFO queue at their price and fill only when "
+                      "they reach the front — genuine queue position, not snapshot depth."},
+}
+
+
 def main() -> None:
     ensure_baseline_user()
 
@@ -213,10 +229,17 @@ def main() -> None:
         season_name="Real Order Book",
         description="Live ladder on a real recorded limit order book — real depth, real slippage.")
 
+    l3_id = upsert_cohort(ARENA_L3)
+    ensure_arena_session(
+        l3_id, ARENA_L3["arena_config"],
+        season_name="Realistic Exchange (L3)",
+        description="Order-by-order book — real FIFO queue position and queue-based fills.")
+
     print("\nDone.")
     print("  Lab:        /compete/open-leaderboard/leaderboard")
     print("  Arena:      /compete/arena-open/leaderboard")
     print("  Arena book: /compete/arena-book/leaderboard")
+    print("  Arena L3:   /compete/arena-l3")
 
 
 if __name__ == "__main__":
