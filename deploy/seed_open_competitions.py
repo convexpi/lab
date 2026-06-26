@@ -207,7 +207,8 @@ ARENA_L3 = {
     "type": "competition", "visibility": "public", "owner_id": BASELINE_USER_ID,
     "status": "active",
     "arena_config": {"tick_interval": 0.5, "n_ticks": None, "n_background_agents": 0, "seed": 42,
-                     "mode": "crypto_l3", "crypto_l3": "data/btcusd_l3_sample.jsonl"},
+                     "mode": "crypto_l3", "crypto_l3": "data/btcusd_l3_sample.jsonl",
+                     "ws_url": "wss://arena-l3-production.up.railway.app"},
     "market_config": {"data_description": "Order-by-order (L3) replay of a real Bitstamp BTC feed. "
                       "Your limit orders join the real FIFO queue at their price and fill only when "
                       "they reach the front — genuine queue position, not snapshot depth."},
