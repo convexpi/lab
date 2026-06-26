@@ -14,3 +14,4 @@ market.
 
 Publish any of them at **convexpi.ai/projects/new** by pasting its GitHub URL. Start your own from
 [`../template`](../template).
+| `crypto_orderbook.ipynb` | Microstructure of a real recorded BTC-USD order book — spread, depth, and slippage |
