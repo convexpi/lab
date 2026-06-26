@@ -22,9 +22,12 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12", cache: pip }
 
+      - name: Install Quarto (for .qmd posts)
+        uses: quarto-dev/quarto-actions/setup@v2
+
       - name: Install render + runtime deps
         run: |
-          pip install --no-cache-dir nbconvert nbclient nbformat bleach ipykernel \
+          pip install --no-cache-dir nbconvert nbclient nbformat bleach ipykernel jupyter \
             numpy pandas matplotlib scipy statsmodels pandas-datareader yfinance convexpi-lab
 
       - name: Fetch author notebook at pinned commit
