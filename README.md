@@ -43,7 +43,7 @@ print(f"Overfitting ratio: {report.overfitting_ratio:.2%}")
 - Alpha discovery detection — did you find the planted signal or fit noise?
 - 19 canonical strategy implementations (momentum, value, quality, size, risk-based)
 - Real-data mode: Ken French factors, FRED macro, yfinance prices (optional)
-- Anomaly graveyard: pre/post-publication Sharpe decay for 6 canonical factors
+- Anomaly graveyard: pre/post-publication Sharpe decay across the canonical factor zoo
 - Forward paper-trading scorer (nightly, via GitHub Actions)
 
 ## Optional dependencies
