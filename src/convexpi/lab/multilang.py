@@ -27,6 +27,23 @@ class ForeignStrategyError(RuntimeError):
     """The foreign-language strategy failed to run (compile/runtime error, timeout, bad output)."""
 
 
+def export_market(market, out_dir: str, splits: tuple[str, ...] = ("train", "test")) -> str:
+    """Write a SyntheticMarket to CSVs so R/Julia notebooks can fit on the exact same data the
+    grader scores. Layout: <out_dir>/<split>/prices.csv, <split>/features/<name>.csv,
+    <split>/feature_names.txt. R/Julia students get this by shelling out to Python in their notebook
+    (deterministic from the seed — no hosting needed)."""
+    out = Path(out_dir)
+    for split in splits:
+        sd = out / split
+        (sd / "features").mkdir(parents=True, exist_ok=True)
+        np.savetxt(sd / "prices.csv", market.prices(split), delimiter=",")
+        feats = market.features(split)
+        for name, arr in feats.items():
+            np.savetxt(sd / "features" / f"{name}.csv", arr, delimiter=",")
+        (sd / "feature_names.txt").write_text("\n".join(feats.keys()) + "\n")
+    return str(out)
+
+
 def supported_languages() -> list[str]:
     """Languages whose interpreter is actually available on this machine."""
     return [lang for lang, (_e, _h, argv) in LANGUAGES.items() if shutil.which(argv[0])]
