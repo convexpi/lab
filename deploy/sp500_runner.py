@@ -109,6 +109,40 @@ def score_model(code: str, csv_path: str) -> dict | None:
         os.unlink(path)
 
 
+def update_live_track(mid: str, as_of: str, forecast, dates: list[str], closes: list[float]) -> dict:
+    """Persist this model's daily forward call, realize any past calls now that the next session is
+    known, and return the live (forward-only, since-first-call) aggregates. This is the genuine
+    live track that accumulates from when a model went active — distinct from the 252-day backtest."""
+    idx = {d: i for i, d in enumerate(dates)}
+    if as_of is not None and forecast is not None:
+        _req("POST", "/sp500_forecasts?on_conflict=model_id,as_of",
+             {"model_id": mid, "as_of": as_of, "forecast": forecast})
+
+    # Realize past forecasts whose next session now exists (next-session return after as_of).
+    pending = _req("GET", f"/sp500_forecasts?model_id=eq.{mid}&realized=is.null&select=as_of,forecast") or []
+    for row in pending:
+        i = idx.get(row["as_of"])
+        if i is None or i + 1 >= len(closes):
+            continue
+        realized = closes[i + 1] / closes[i] - 1.0
+        s = 1 if row["forecast"] > 0 else (-1 if row["forecast"] < 0 else 0)
+        _req("PATCH", f"/sp500_forecasts?model_id=eq.{mid}&as_of=eq.{row['as_of']}",
+             {"realized": realized, "pnl": s * realized})
+
+    realized_rows = _req("GET", f"/sp500_forecasts?model_id=eq.{mid}&pnl=not.is.null&select=pnl") or []
+    import numpy as np
+    pnls = np.array([r["pnl"] for r in realized_rows], dtype=float)
+    if not len(pnls):
+        return {"live_days": 0, "live_sharpe": None, "live_hit_rate": None, "live_cum_return": None}
+    nz = pnls[pnls != 0]
+    return {
+        "live_days": int(len(pnls)),
+        "live_sharpe": float(np.sqrt(252) * pnls.mean() / pnls.std()) if pnls.std() > 1e-12 else 0.0,
+        "live_hit_rate": float((nz > 0).mean()) if len(nz) else 0.0,
+        "live_cum_return": float(np.prod(1 + pnls) - 1),
+    }
+
+
 def main():
     import pandas as pd
     import yfinance as yf
@@ -120,16 +154,22 @@ def main():
     close.to_frame("close").to_csv(csv)
     print(f"^GSPC: {len(close)} days through {close.index[-1].date()}")
 
+    dates = [d.date().isoformat() for d in close.index]
+    closes = [float(v) for v in close.values]
+
     models = fetch_models()
     print(f"scoring {len(models)} models...")
     for m in models:
         res = score_model(m["code"], csv)
         if res is None:
             continue
+        live = update_live_track(m["id"], res.get("last_forecast_as_of"), res.get("last_forecast"), dates, closes)
         _req("POST", "/sp500_scores?on_conflict=model_id",
-             {"model_id": m["id"], **res,
+             {"model_id": m["id"], **res, **live,
               "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
-        print(f"   {m['name']:28} hit={res['hit_rate']:.0%}  cum={res['cum_return']:+.1%}  sharpe={res['sharpe']:+.2f}")
+        ls = live["live_sharpe"]
+        live_str = f"{live['live_days']}d sharpe={ls:+.2f}" if ls is not None else f"{live['live_days']}d (no realized yet)"
+        print(f"   {m['name']:28} backtest sharpe={res['sharpe']:+.2f}  |  live {live_str}")
 
 
 if __name__ == "__main__":
