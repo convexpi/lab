@@ -4,15 +4,18 @@ FROM python:3.12-slim
 # stdlib (R read.csv, Julia DelimitedFiles), so no extra language packages are needed.
 ARG JULIA_VERSION=1.10.5
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends r-base-core curl ca-certificates xz-utils execstack \
+    && apt-get install -y --no-install-recommends r-base-core curl ca-certificates xz-utils \
     && curl -fsSL "https://julialang-s3.julialang.org/bin/linux/x64/1.10/julia-${JULIA_VERSION}-linux-x86_64.tar.gz" \
        | tar -xz -C /opt \
     && ln -s /opt/julia-${JULIA_VERSION}/bin/julia /usr/local/bin/julia \
-    # Julia's bundled libs (e.g. libopenlibm.so) ship flagged as needing an executable stack, which
-    # the sandboxed grader container refuses ("cannot enable executable stack"). Clear the flag so
-    # Julia can boot under the restricted stack policy.
-    && (find /opt/julia-${JULIA_VERSION}/lib -name '*.so*' -exec execstack -c {} \; 2>/dev/null || true) \
     && rm -rf /var/lib/apt/lists/*
+
+# Julia's bundled libs (e.g. libopenlibm.so) are flagged as needing an executable stack, which the
+# sandboxed grader container refuses ("cannot enable executable stack"), so Julia can't boot. The
+# classic `execstack -c` fix is unavailable on Debian bookworm, so clear the PT_GNU_STACK exec bit
+# directly with a tiny dependency-free ELF patcher.
+COPY deploy/clear_execstack.py /tmp/clear_execstack.py
+RUN python3 /tmp/clear_execstack.py /opt/julia-${JULIA_VERSION}/lib && rm /tmp/clear_execstack.py
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
