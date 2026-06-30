@@ -147,37 +147,38 @@ class Grader:
         self._backtest = Backtest(tc_bps=self.tc_bps, rebalance_every=5)
 
     def evaluate(self, strategy: Strategy) -> GradeReport:
-        """Run the strategy on both splits and return a full grade report."""
+        """Run a Python strategy on both splits and return a full grade report."""
         m = self.market
+        is_result  = self._backtest.run(strategy, m.prices("train"), m.features("train"))
+        oos_result = self._backtest.run(strategy, m.prices("test"), m.features("test"))
+        return self._report_from_results(type(strategy).__name__, is_result, oos_result)
 
-        # ---- In-sample run (student could have done this themselves) ----
-        is_prices   = m.prices("train")
-        is_features = m.features("train")
-        is_result   = self._backtest.run(strategy, is_prices, is_features)
+    def evaluate_language(self, language: str, code: str, name: str = "Strategy",
+                          timeout: int = 60) -> GradeReport:
+        """Grade a non-Python (R/Julia) strategy. The foreign code produces only the weights (via
+        its harness); scoring runs through the same run_from_weights path as Python, so identical
+        logic in any language earns the same OOS result."""
+        from .multilang import run_language_weights
+        m, bt = self.market, self._backtest
 
-        # ---- Out-of-sample run (hidden holdout) ----
-        oos_prices   = m.prices("test")
+        def _result(split: str):
+            prices, feats = m.prices(split), m.features(split)
+            weights = run_language_weights(language, code, prices, feats,
+                                           warmup_days=bt.warmup_days,
+                                           rebalance_every=bt.rebalance_every, timeout=timeout)
+            return bt.run_from_weights(weights, prices)
+
+        return self._report_from_results(name, _result("train"), _result("test"))
+
+    def _report_from_results(self, name: str, is_result, oos_result) -> GradeReport:
+        """Build a GradeReport from in/out-of-sample results — shared across all languages."""
+        m = self.market
         oos_features = m.features("test")
-        oos_result   = self._backtest.run(strategy, oos_prices, oos_features)
-
-        # ---- Overfitting ratio ----
-        is_s  = is_result.sharpe
-        oos_s = oos_result.sharpe
-        if abs(is_s) < 1e-6:
-            ratio = 0.0
-        else:
-            ratio = min(1.0, oos_s / is_s) if is_s > 0 else 0.0
-
-        # ---- Alpha discovery ----
+        is_s, oos_s = is_result.sharpe, oos_result.sharpe
+        ratio = 0.0 if abs(is_s) < 1e-6 else (min(1.0, oos_s / is_s) if is_s > 0 else 0.0)
         alpha_discovery = self._check_alpha_discovery(oos_result, oos_features)
-
-        # ---- Noise loadings ----
         noise_features = [f for f in m.FEATURE_NAMES if f.startswith("noise_")]
-        noise_loadings = self._compute_noise_loadings(oos_result, oos_features,
-                                                      noise_features)
-
-        name = type(strategy).__name__
-
+        noise_loadings = self._compute_noise_loadings(oos_result, oos_features, noise_features)
         return GradeReport(
             strategy_name=name,
             is_sharpe=is_s,
