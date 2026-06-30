@@ -104,7 +104,7 @@ def _req(method: str, path: str, body: dict | None = None) -> dict | list | None
 
 
 def fetch_pending() -> list[dict]:
-    result = _req("GET", "/submissions?status=eq.pending&limit=5&select=id,cohort_id,code")
+    result = _req("GET", "/submissions?status=eq.pending&limit=5&select=id,cohort_id,code,language")
     return result or []
 
 
@@ -199,27 +199,34 @@ def notify_grade_failed(sub_id: str, message: str) -> None:
 # Grade runner — executes in a subprocess to isolate student code
 # ---------------------------------------------------------------------------
 
-RUNNER_TEMPLATE = textwrap.dedent("""
+# The runner always builds the market + grader the same way; only the strategy-execution middle
+# differs by language (Python inlines a MyStrategy class; R/Julia hand their source to the grader,
+# which runs it via its harness). Scoring + result extraction are shared.
+_SETUP = textwrap.dedent("""
 import sys, json
 sys.path.insert(0, "{pkg_path}")
-
 from convexpi.lab import SyntheticMarket, Grader
 from convexpi.lab.synth import PlantedAlpha
 
 _planted_alphas = {planted_alphas_repr}
 market = SyntheticMarket(
-    n_stocks={n_stocks},
-    n_days={n_days},
-    seed={seed},
+    n_stocks={n_stocks}, n_days={n_days}, seed={seed},
     planted_alphas=_planted_alphas if _planted_alphas is not None else None,
 )
+grader = Grader(market)
+""")
 
+_PY_EXEC = textwrap.dedent("""
 {user_code}
 
-strategy = MyStrategy()
-grader = Grader(market)
-report = grader.evaluate(strategy)
+report = grader.evaluate(MyStrategy())
+""")
 
+_FOREIGN_EXEC = textwrap.dedent("""
+report = grader.evaluate_language("{language}", {user_code_repr}, name="strategy")
+""")
+
+_RESULT = textwrap.dedent("""
 result = dict(
     is_sharpe=report.is_sharpe,
     oos_sharpe=report.oos_sharpe,
@@ -241,6 +248,9 @@ result = dict(
 )
 print("__RESULT__:" + json.dumps(result))
 """)
+
+PY_RUNNER = _SETUP + _PY_EXEC + _RESULT
+FOREIGN_RUNNER = _SETUP + _FOREIGN_EXEC + _RESULT
 
 # Where the convexpi package lives (same container)
 PKG_PATH = str(Path(__file__).parent.parent / "src")
@@ -303,18 +313,22 @@ def grade_submission(submission: dict) -> None:
     sub_id = submission["id"]
     cohort_id = submission["cohort_id"]
     code: str = submission["code"]
+    language: str = (submission.get("language") or "python").lower()
 
-    log.info("submission=%s grading started", sub_id[:8])
+    log.info("submission=%s grading started (%s)", sub_id[:8], language)
     mark_running(sub_id)
 
-    # Belt-and-suspenders blocked pattern check
-    for pattern in BLOCKED_PATTERNS:
-        if pattern in code:
-            mark_failed(sub_id, f"Blocked: '{pattern}' is not allowed.")
+    # Language-aware belt-and-suspenders (the API already validated; this guards the worker).
+    if language == "python":
+        for pattern in BLOCKED_PATTERNS:
+            if pattern in code:
+                mark_failed(sub_id, f"Blocked: '{pattern}' is not allowed.")
+                return
+        if "class MyStrategy" not in code:
+            mark_failed(sub_id, "Code must define a class named MyStrategy.")
             return
-
-    if "class MyStrategy" not in code:
-        mark_failed(sub_id, "Code must define a class named MyStrategy.")
+    elif language not in ("r", "julia"):
+        mark_failed(sub_id, f"Unsupported language: {language}")
         return
 
     # Resolve market config (cohort can override seed/size/planted alphas)
@@ -340,14 +354,12 @@ def grade_submission(submission: dict) -> None:
     else:
         planted_alphas_repr = "None"  # SyntheticMarket will use its own defaults
 
-    runner = RUNNER_TEMPLATE.format(
-        pkg_path=PKG_PATH,
-        user_code=code,
-        n_stocks=n_stocks,
-        n_days=n_days,
-        seed=seed,
-        planted_alphas_repr=planted_alphas_repr,
-    )
+    common = dict(pkg_path=PKG_PATH, n_stocks=n_stocks, n_days=n_days, seed=seed,
+                  planted_alphas_repr=planted_alphas_repr)
+    if language == "python":
+        runner = PY_RUNNER.format(user_code=code, **common)
+    else:
+        runner = FOREIGN_RUNNER.format(language=language, user_code_repr=repr(code), **common)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         script = Path(tmpdir) / "runner.py"

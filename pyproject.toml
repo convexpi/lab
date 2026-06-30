@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "convexpi-lab"
-version = "0.2.0"
+version = "0.3.0"
 description = "ConvexPi Lab — synthetic equity panel, backtester, and anti-overfitting grader"
 readme = "README.md"
 license = { text = "MIT" }
@@ -47,6 +47,8 @@ Documentation = "https://convexpi.ai/docs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/convexpi/lab"]
+# Ship the non-Python language harnesses (R/Julia) inside the wheel so the grader can find them.
+artifacts = ["src/convexpi/lab/harnesses/*.R", "src/convexpi/lab/harnesses/*.jl"]
 
 [tool.hatch.build.targets.wheel.sources]
 "src/convexpi/lab" = "convexpi/lab"
