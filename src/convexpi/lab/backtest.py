@@ -207,15 +207,12 @@ class Backtest:
         T, N = prices.shape
         warmup = min(self.warmup_days, T - 2)
 
-        daily_returns = np.zeros(T - warmup - 1)
+        # Produce the weights trajectory by calling the strategy each rebalance day; scoring is
+        # delegated to run_from_weights so every backtest — Python or another language — is scored
+        # by the exact same code (one source of truth for OOS Sharpe, costs, turnover, etc.).
         weights_history = np.zeros((T, N))
         portfolio = np.zeros(N)
-
         for t in range(warmup, T - 1):
-            # t: current day (observe features[t], prices[t])
-            # t+1: next day (returns earned from t → t+1)
-
-            # Rebalance decision
             step = t - warmup
             if step % self.rebalance_every == 0:
                 features_t = {k: v[t] for k, v in features.items()}
@@ -230,21 +227,29 @@ class Backtest:
                     new_w = portfolio.copy()
             else:
                 new_w = portfolio.copy()
-
-            # Transaction cost on today's rebalancing turnover
-            tc = np.abs(new_w - portfolio).sum() * self.tc_bps / 10_000
-
-            # Returns from day t to t+1
-            next_rets = prices[t + 1] / prices[t] - 1
-            port_return = float(np.dot(new_w, next_rets)) - tc
-
-            daily_returns[step] = port_return
             portfolio = new_w
             weights_history[t + 1] = new_w
 
+        return self.run_from_weights(weights_history, prices)
+
+    def run_from_weights(self, weights: np.ndarray, prices: np.ndarray) -> BacktestResult:
+        """Score a precomputed (T, N) weights trajectory — the language-agnostic scoring core.
+
+        `weights[t+1]` are the target weights held to earn the day t→t+1 return; `weights[:warmup+1]`
+        are zero (flat before the strategy starts). R/Julia strategies run their own on_day loop in
+        a subprocess and hand back this matrix, which is then scored identically to Python."""
+        T, N = prices.shape
+        warmup = min(self.warmup_days, T - 2)
+        weights = np.nan_to_num(np.asarray(weights, dtype=float))
+        daily_returns = np.zeros(T - warmup - 1)
+        for t in range(warmup, T - 1):
+            w, prev = weights[t + 1], weights[t]
+            tc = np.abs(w - prev).sum() * self.tc_bps / 10_000
+            next_rets = prices[t + 1] / prices[t] - 1
+            daily_returns[t - warmup] = float(np.dot(w, next_rets)) - tc
         return BacktestResult(
             daily_returns=daily_returns,
-            weights=weights_history,
+            weights=weights,
             tc_bps=self.tc_bps,
             rebalance_every=self.rebalance_every,
             warmup_days=warmup,
