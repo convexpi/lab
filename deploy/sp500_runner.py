@@ -70,12 +70,19 @@ for i in range(start, n - 1):
         hits += int(s == (1 if realized > 0 else -1))
 pnl = np.array(pnl)
 sharpe = float(np.sqrt(252) * pnl.mean() / pnl.std()) if pnl.std() > 1e-12 else 0.0
+# The model's live call for the NEXT (unrealized) session: predict on the full history.
+try:
+    fwd = float(predict(prices))
+except Exception:
+    fwd = 0.0
 print(json.dumps({{
     "n_days": int(len(pnl)),
     "hit_rate": (hits / bets) if bets else 0.0,
     "cum_return": float(np.prod(1 + pnl) - 1),
     "sharpe": sharpe,
     "last_date": str(prices.index[-1].date()),
+    "last_forecast": fwd,
+    "last_forecast_as_of": str(prices.index[-1].date()),
 }}))
 """
 
