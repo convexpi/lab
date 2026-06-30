@@ -17,7 +17,7 @@ import numpy as np
 # language -> (file extension, harness filename, interpreter argv prefix)
 LANGUAGES: dict[str, tuple[str, str, list[str]]] = {
     "r": ("R", "harness.R", ["Rscript"]),
-    # "julia": ("jl", "harness.jl", ["julia"]),   # Phase 4
+    "julia": ("jl", "harness.jl", ["julia"]),
 }
 
 _HARNESS_DIR = Path(__file__).resolve().parent / "harnesses"
