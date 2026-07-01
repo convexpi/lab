@@ -407,7 +407,7 @@ def grade_submission(submission: dict) -> None:
 # Poll loop
 # ---------------------------------------------------------------------------
 
-WORKER_BUILD = "2026-06-30-multilang-2"  # bump to confirm which image Railway is actually running
+WORKER_BUILD = "2026-06-30-multilang-3"  # bump to confirm which image Railway is actually running
 
 def main():
     log.info("grader worker started  build=%s  languages=python,r,julia  "

@@ -11,7 +11,9 @@
 #   prices     Vector of today's prices over stocks
 #   portfolio  Vector of current weights before rebalancing
 #   returns    Vector of target weights (length = number of stocks)
-using DelimitedFiles
+# Statistics + LinearAlgebra are stdlib — expose them so strategies can use mean/std/var/cor/norm/dot
+# without an explicit import (mirrors R's base mean/sd being available by default).
+using DelimitedFiles, Statistics, LinearAlgebra
 
 data_dir, user_path, out_path = ARGS[1], ARGS[2], ARGS[3]
 warmup = parse(Int, ARGS[4]); rebalance = parse(Int, ARGS[5])

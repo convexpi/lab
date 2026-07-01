@@ -38,6 +38,36 @@ end
     assert np.allclose(py.daily_returns, jl.daily_returns, atol=1e-8)
 
 
+def test_julia_zscore_uses_statistics():
+    """A strategy using mean/std (Statistics stdlib) must run — the harness exposes it by default."""
+    market = SyntheticMarket(n_stocks=30, n_days=350, seed=42)
+    prices, features = market.prices("train"), market.features("train")
+    feat = next(iter(features))
+
+    class PyStrat(Strategy):
+        def on_day(self, day, features, prices, portfolio):
+            raw = np.nan_to_num(features[feat])
+            z = (raw - raw.mean()) / (raw.std() + 1e-8)
+            s = np.abs(z).sum()
+            return z / s if s > 0 else z
+
+    py = Backtest(warmup_days=252).run(PyStrat(), prices, features)
+
+    jl_code = f'''
+function on_day(day, features, prices, portfolio)
+    raw = copy(features["{feat}"]); raw[.!isfinite.(raw)] .= 0.0
+    z = (raw .- mean(raw)) ./ (std(raw; corrected=false) + 1e-8)
+    s = sum(abs.(z)); return s > 0 ? z ./ s : z
+end
+'''
+    weights = run_language_weights("julia", jl_code, prices, features, warmup_days=252, rebalance_every=1)
+    jl = Backtest(warmup_days=252).run_from_weights(weights, prices)
+
+    assert np.abs(weights).sum() > 0, "z-score strategy produced all-zero weights (mean/std unavailable?)"
+    assert np.allclose(py.weights, weights, atol=1e-8)
+    assert np.allclose(py.daily_returns, jl.daily_returns, atol=1e-8)
+
+
 def test_julia_grader_matches_python_grader():
     market = SyntheticMarket(n_stocks=40, n_days=400, seed=42)
     feat = next(iter(market.features("train")))
