@@ -407,10 +407,12 @@ def grade_submission(submission: dict) -> None:
 # Poll loop
 # ---------------------------------------------------------------------------
 
+WORKER_BUILD = "2026-06-30-multilang-2"  # bump to confirm which image Railway is actually running
+
 def main():
-    log.info("grader worker started  seed=%d  stocks=%d  days=%d  "
-             "poll=%.1fs  timeout=%ds",
-             MARKET_SEED, N_STOCKS, N_DAYS, POLL_SECONDS, TIMEOUT_SECS)
+    log.info("grader worker started  build=%s  languages=python,r,julia  "
+             "seed=%d  stocks=%d  days=%d  poll=%.1fs  timeout=%ds",
+             WORKER_BUILD, MARKET_SEED, N_STOCKS, N_DAYS, POLL_SECONDS, TIMEOUT_SECS)
     while True:
         try:
             pending = fetch_pending()
