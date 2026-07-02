@@ -210,7 +210,7 @@ from convexpi.lab.synth import PlantedAlpha
 
 _planted_alphas = {planted_alphas_repr}
 market = SyntheticMarket(
-    n_stocks={n_stocks}, n_days={n_days}, seed={seed},
+    n_stocks={n_stocks}, n_days={n_days}, seed={seed}, idio_process="{idio_process}",
     planted_alphas=_planted_alphas if _planted_alphas is not None else None,
 )
 grader = Grader(market)
@@ -336,6 +336,9 @@ def grade_submission(submission: dict) -> None:
     seed     = int(cfg.get("seed",     MARKET_SEED))
     n_stocks = int(cfg.get("n_stocks", N_STOCKS))
     n_days   = int(cfg.get("n_days",   N_DAYS))
+    # Idiosyncratic-return DGP: "t" (default) or "garch" (finmlsim clustering + fat tails). Opt-in
+    # per cohort so existing markets/grades are unchanged unless a cohort explicitly asks for it.
+    idio_process = "garch" if str(cfg.get("idio_process", "t")).lower() == "garch" else "t"
 
     # Build planted_alphas repr for the runner script
     raw_alphas = cfg.get("planted_alphas")  # list of dicts, or None = use defaults
@@ -355,7 +358,7 @@ def grade_submission(submission: dict) -> None:
         planted_alphas_repr = "None"  # SyntheticMarket will use its own defaults
 
     common = dict(pkg_path=PKG_PATH, n_stocks=n_stocks, n_days=n_days, seed=seed,
-                  planted_alphas_repr=planted_alphas_repr)
+                  idio_process=idio_process, planted_alphas_repr=planted_alphas_repr)
     if language == "python":
         runner = PY_RUNNER.format(user_code=code, **common)
     else:

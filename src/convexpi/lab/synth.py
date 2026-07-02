@@ -144,6 +144,7 @@ class SyntheticMarket:
         train_frac: float = 0.70,
         tc_bps: float = 10.0,
         seed: int = 42,
+        idio_process: str = "t",
         *,
         n_assets: Optional[int] = None,  # alias for n_stocks
     ):
@@ -153,6 +154,10 @@ class SyntheticMarket:
         self.planted_alphas = planted_alphas if planted_alphas is not None else _default_alphas()
         self.train_frac = train_frac
         self.tc_bps = tc_bps
+        self.seed = seed
+        # Idiosyncratic-return DGP: "t" = iid Student-t (default, unchanged); "garch" = finmlsim
+        # GARCH(1,1) with t innovations (volatility CLUSTERING + fat tails, more realistic OOS risk).
+        self.idio_process = idio_process
         self.rng = np.random.default_rng(seed)
 
         self._prices: Optional[np.ndarray] = None      # (T, N)
@@ -265,12 +270,23 @@ class SyntheticMarket:
             betas[:, 0] = rng.normal(1.0, 0.15, N)   # market beta ≈ 1
         common = factor_rets @ betas.T                  # (T, N)
 
-        # ---- 4. Idiosyncratic returns (fat-tailed, student-t df=5) ----
+        # ---- 4. Idiosyncratic returns ----
         idio_vols = rng.uniform(0.008, 0.022, N)
-        df = 5
-        t_shocks = rng.standard_t(df, (T, N))
-        t_shocks /= np.sqrt(df / (df - 2))             # normalize to σ=1
-        idio_rets = t_shocks * idio_vols                # (T, N)
+        if self.idio_process == "garch":
+            # Volatility CLUSTERING + fat tails via finmlsim GARCH(1,1)-t, one series per stock.
+            # Standardised to unit std so idio_vols still sets each stock's average vol; the GARCH
+            # dynamics live in the *shape* (time-varying conditional vol), not the level.
+            import finmlsim as fms
+            idio_rets = np.empty((T, N))
+            for n in range(N):
+                g = fms.simulate.garch(n=T, dist="t", mu=0.0,
+                                       seed=int((self.seed * 1_000_003 + n) % (2**31 - 1)))
+                idio_rets[:, n] = g / (g.std() + 1e-12) * idio_vols[n]
+        else:
+            df = 5                                      # iid Student-t (default, unchanged)
+            t_shocks = rng.standard_t(df, (T, N))
+            t_shocks /= np.sqrt(df / (df - 2))          # normalize to σ=1
+            idio_rets = t_shocks * idio_vols            # (T, N)
 
         # ---- 5. Base returns and prices ----
         base_rets = common + idio_rets

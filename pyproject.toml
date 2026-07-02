@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "convexpi-lab"
-version = "0.3.0"
+version = "0.4.0"
 description = "ConvexPi Lab — synthetic equity panel, backtester, and anti-overfitting grader"
 readme = "README.md"
 license = { text = "MIT" }
@@ -22,6 +22,7 @@ dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",
     "scipy>=1.10",
+    "finmlsim>=0.4",   # optional realistic market DGP (GARCH clustering + fat tails)
 ]
 
 [project.optional-dependencies]
