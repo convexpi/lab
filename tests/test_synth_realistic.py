@@ -49,3 +49,20 @@ def test_garch_adds_clustering_and_preserves_alpha():
     assert _clustering(mg) > _clustering(mt) + 0.02   # meaningfully more volatility clustering
     assert _alpha_ic(mg) > 0                           # planted alpha still recoverable
     assert not np.allclose(mt.prices("all"), mg.prices("all"))
+
+
+def test_market_exhibits_stylized_facts():
+    """Use finmlsim.stylized as an independent oracle: the market must LOOK real (fat tails,
+    ~uncorrelated returns), and the garch mode must show more volatility clustering."""
+    import finmlsim as fms
+
+    def facts(m, key):
+        r = m.returns("all")
+        return float(np.mean([fms.stylized.summary(r[:, n])[key] for n in range(0, r.shape[1], 10)]))
+
+    mt = SyntheticMarket(seed=42)                       # default (Student-t)
+    assert facts(mt, "excess_kurtosis") > 0.5           # heavy tails
+    assert abs(facts(mt, "ret_acf_lag1")) < 0.1         # returns ≈ uncorrelated (no free direction edge)
+
+    mg = SyntheticMarket(seed=42, idio_process="garch")
+    assert facts(mg, "sq_ret_acf_mean") > facts(mt, "sq_ret_acf_mean")  # more volatility clustering
