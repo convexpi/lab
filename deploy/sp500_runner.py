@@ -7,13 +7,20 @@ predicts the next session's return; we score the realized move. The result (dire
 cumulative PnL, Sharpe) is upserted into sp500_scores. Run daily after the US close — each run folds in
 the newest day, so the standings are genuinely live and out-of-sample.
 
-Safety: each model runs in a subprocess with a hard timeout; dangerous imports are blocked.
+Safety: submitted code is validated and executed via deploy/sandbox.py — AST-checked imports, a
+stripped environment that carries no credentials, and POSIX resource limits. See that module for
+what this does and does not guarantee.
+
+Identity: each forecast is stamped with a hash of the code that produced it, and the live
+aggregates only count forecasts from the model's current code. Editing a submission therefore
+starts its live track over rather than blending the new code's score with the old code's history.
 
 Env: NEXT_PUBLIC_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_KEY.
 Run: python deploy/sp500_runner.py
 """
 from __future__ import annotations
 import datetime
+import hashlib
 import json
 import os
 import subprocess
@@ -21,12 +28,18 @@ import sys
 import tempfile
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from sandbox import Rejected, run as run_sandboxed, validate  # noqa: E402
+
 URL = (os.environ.get("SUPABASE_URL") or os.environ["NEXT_PUBLIC_SUPABASE_URL"]).rstrip("/")
 KEY = os.environ["SUPABASE_SERVICE_KEY"]
 WINDOW = 252            # trading days scored
 TIMEOUT = 60            # seconds per model
-BLOCKED = ("import os", "import sys", "import subprocess", "import socket", "import requests",
-           "__import__", "open(", "eval(", "exec(", "urllib", "shutil")
+
+
+def code_hash(code: str) -> str:
+    """Identity of a submission's code. Forecasts are attributed to the exact source that made them."""
+    return hashlib.sha256(code.encode()).hexdigest()[:16]
 
 
 def _req(method, path, body=None):
@@ -88,35 +101,49 @@ print(json.dumps({{
 
 
 def score_model(code: str, csv_path: str) -> dict | None:
-    low = code.lower()
-    if any(b in low for b in BLOCKED):
-        print("   blocked import in model code")
+    try:
+        validate(code)
+    except Rejected as e:
+        print(f"   rejected: {e}")
         return None
     script = RUNNER.format(csv=csv_path, user_code=code, window=WINDOW)
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        f.write(script)
-        path = f.name
     try:
-        out = subprocess.run([sys.executable, path], capture_output=True, text=True, timeout=TIMEOUT)
-        if out.returncode != 0:
-            print(f"   model error: {out.stderr.strip()[:200]}")
-            return None
-        return json.loads(out.stdout.strip().splitlines()[-1])
+        out = run_sandboxed(script, timeout=TIMEOUT, cpu_seconds=TIMEOUT - 15)
     except subprocess.TimeoutExpired:
         print("   model timed out")
         return None
-    finally:
-        os.unlink(path)
+    if out.returncode != 0:
+        print(f"   model error: {out.stderr.strip()[:200]}")
+        return None
+    try:
+        return json.loads(out.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        print("   model produced no parsable result")
+        return None
 
 
-def update_live_track(mid: str, as_of: str, forecast, dates: list[str], closes: list[float]) -> dict:
+def update_live_track(mid: str, as_of: str, forecast, dates: list[str], closes: list[float],
+                      chash: str) -> dict:
     """Persist this model's daily forward call, realize any past calls now that the next session is
     known, and return the live (forward-only, since-first-call) aggregates. This is the genuine
-    live track that accumulates from when a model went active — distinct from the 252-day backtest."""
+    live track that accumulates from when a model went active — distinct from the 252-day backtest.
+
+    Aggregates cover only forecasts stamped with `chash`, the current code's hash. A submission can
+    be edited in place (sp500-actions.ts refreshes the code on the same row so the track survives),
+    which previously left the live Sharpe averaging over forecasts from code that no longer existed
+    while the backtest reflected only the new code — two columns describing two different models.
+    Scoping to the current hash means an edit restarts the live track, which is the honest reading:
+    the new code has no forward record yet.
+    """
     idx = {d: i for i, d in enumerate(dates)}
+
+    # One-time backfill for rows written before forecasts carried a hash. They can only be
+    # attributed to whatever code is present now; after this pass every row is explicitly stamped.
+    _req("PATCH", f"/sp500_forecasts?model_id=eq.{mid}&code_hash=is.null", {"code_hash": chash})
+
     if as_of is not None and forecast is not None:
         _req("POST", "/sp500_forecasts?on_conflict=model_id,as_of",
-             {"model_id": mid, "as_of": as_of, "forecast": forecast})
+             {"model_id": mid, "as_of": as_of, "forecast": forecast, "code_hash": chash})
 
     # Realize past forecasts whose next session now exists (next-session return after as_of).
     pending = _req("GET", f"/sp500_forecasts?model_id=eq.{mid}&realized=is.null&select=as_of,forecast") or []
@@ -129,7 +156,8 @@ def update_live_track(mid: str, as_of: str, forecast, dates: list[str], closes: 
         _req("PATCH", f"/sp500_forecasts?model_id=eq.{mid}&as_of=eq.{row['as_of']}",
              {"realized": realized, "pnl": s * realized})
 
-    realized_rows = _req("GET", f"/sp500_forecasts?model_id=eq.{mid}&pnl=not.is.null&select=pnl") or []
+    realized_rows = _req(
+        "GET", f"/sp500_forecasts?model_id=eq.{mid}&pnl=not.is.null&code_hash=eq.{chash}&select=pnl") or []
     import numpy as np
     pnls = np.array([r["pnl"] for r in realized_rows], dtype=float)
     if not len(pnls):
@@ -163,7 +191,8 @@ def main():
         res = score_model(m["code"], csv)
         if res is None:
             continue
-        live = update_live_track(m["id"], res.get("last_forecast_as_of"), res.get("last_forecast"), dates, closes)
+        live = update_live_track(m["id"], res.get("last_forecast_as_of"), res.get("last_forecast"),
+                                 dates, closes, code_hash(m["code"]))
         _req("POST", "/sp500_scores?on_conflict=model_id",
              {"model_id": m["id"], **res, **live,
               "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
