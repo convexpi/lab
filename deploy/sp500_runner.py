@@ -82,7 +82,8 @@ HAS_CODE_HASH = True
 # Columns added by 20260731_sp500_costs_and_deflation.sql. Dropped from the payload when the
 # migration hasn't been applied, so shipping the runner first degrades instead of 400-ing.
 EXTRA_SCORE_COLS = ("gross_sharpe", "cost_drag", "turnover", "excess_return", "info_ratio",
-                    "live_info_ratio", "live_turnover", "live_deflated_sharpe")
+                    "live_info_ratio", "live_turnover", "live_deflated_sharpe",
+                    "live_gross_sharpe", "live_cost_drag")
 HAS_EXTRA_SCORE_COLS = True
 
 
@@ -223,15 +224,17 @@ def update_live_track(mid: str, as_of: str, forecast, dates: list[str], closes: 
                        "&select=as_of,forecast,realized&order=as_of.asc") or []
     import numpy as np
     if not rows:
-        return {"live_days": 0, "live_sharpe": None, "live_hit_rate": None,
-                "live_cum_return": None, "live_info_ratio": None, "live_turnover": None,
+        return {"live_days": 0, "live_sharpe": None, "live_gross_sharpe": None,
+                "live_cost_drag": None, "live_hit_rate": None, "live_cum_return": None,
+                "live_info_ratio": None, "live_turnover": None,
                 "live_daily_sharpe": None, "live_skew": None, "live_kurtosis": None}
 
     bench = np.array([r["realized"] for r in rows], dtype=float)
     sign = np.array([1 if r["forecast"] > 0 else (-1 if r["forecast"] < 0 else 0) for r in rows],
                     dtype=float)
     turn = np.abs(np.diff(np.concatenate([[0.0], sign])))    # first session opens from flat
-    pnls = sign * bench - (COST_BPS / 10000.0) * turn
+    gross = sign * bench
+    pnls = gross - (COST_BPS / 10000.0) * turn
     excess = pnls - bench
     nz = sign != 0
 
@@ -243,6 +246,10 @@ def update_live_track(mid: str, as_of: str, forecast, dates: list[str], closes: 
     return {
         "live_days": int(len(pnls)),
         "live_sharpe": ann(pnls),
+        # Reported beside the net figure so the cost of trading is legible rather than implicit:
+        # the gap between the two is what turnover costs this model.
+        "live_gross_sharpe": ann(gross),
+        "live_cost_drag": float(np.prod(1 + gross) - np.prod(1 + pnls)),
         "live_hit_rate": float((bench[nz] * sign[nz] > 0).mean()) if nz.any() else 0.0,
         "live_cum_return": float(np.prod(1 + pnls) - 1),
         "live_info_ratio": ann(excess),
