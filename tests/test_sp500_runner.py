@@ -62,6 +62,36 @@ def test_model_raising_is_scored_as_flat_not_crashed(csv):
     assert res["cum_return"] == pytest.approx(0.0)
 
 
+def _capture(monkeypatch):
+    """Record every REST call update_live_track makes, returning empty results."""
+    calls = []
+
+    def fake(method, path, body=None):
+        calls.append((method, path, body))
+        return []
+
+    monkeypatch.setattr(R, "_req", fake)
+    return calls
+
+
+def test_live_track_scopes_to_current_code_when_column_exists(monkeypatch):
+    calls = _capture(monkeypatch)
+    monkeypatch.setattr(R, "HAS_CODE_HASH", True)
+    R.update_live_track("m1", "2026-07-30", 0.5, ["2026-07-30"], [100.0], "abc123")
+    assert any(b and b.get("code_hash") == "abc123" for _, _, b in calls), "forecast not stamped"
+    assert any("code_hash=eq.abc123" in p for m, p, _ in calls if m == "GET"), "aggregate not scoped"
+
+
+def test_live_track_degrades_when_column_missing(monkeypatch):
+    """A deploy landing before its migration must still score, just without code scoping."""
+    calls = _capture(monkeypatch)
+    monkeypatch.setattr(R, "HAS_CODE_HASH", False)
+    R.update_live_track("m1", "2026-07-30", 0.5, ["2026-07-30"], [100.0], "abc123")
+    assert not any(b and "code_hash" in b for _, _, b in calls), "wrote a column that doesn't exist"
+    assert not any("code_hash" in p for _, p, _ in calls), "queried a column that doesn't exist"
+    assert any(m == "POST" and "sp500_forecasts" in p for m, p, _ in calls), "forecast not recorded"
+
+
 def test_code_hash_tracks_edits():
     a = "def predict(h):\n    return 0.0\n"
     assert R.code_hash(a) == R.code_hash(a)

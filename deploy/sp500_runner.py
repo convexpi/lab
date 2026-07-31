@@ -26,6 +26,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -51,6 +52,23 @@ def _req(method, path, body=None):
     with urllib.request.urlopen(r, timeout=60) as resp:
         raw = resp.read().decode()
         return json.loads(raw) if raw.strip() else None
+
+
+def _column_exists(table: str, column: str) -> bool:
+    """Probe whether a column is present, so a deploy that lands before its migration degrades
+    instead of failing every write. PostgREST answers an unknown column with 400."""
+    try:
+        _req("GET", f"/{table}?select={column}&limit=1")
+        return True
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 404):
+            return False
+        raise
+
+
+# Resolved once in main(). When false, the live track can't be scoped to the producing code, so it
+# falls back to the old unscoped behaviour rather than breaking the nightly run.
+HAS_CODE_HASH = True
 
 
 def fetch_models():
@@ -137,13 +155,16 @@ def update_live_track(mid: str, as_of: str, forecast, dates: list[str], closes: 
     """
     idx = {d: i for i, d in enumerate(dates)}
 
-    # One-time backfill for rows written before forecasts carried a hash. They can only be
-    # attributed to whatever code is present now; after this pass every row is explicitly stamped.
-    _req("PATCH", f"/sp500_forecasts?model_id=eq.{mid}&code_hash=is.null", {"code_hash": chash})
+    if HAS_CODE_HASH:
+        # One-time backfill for rows written before forecasts carried a hash. They can only be
+        # attributed to whatever code is present now; after this pass every row is explicitly stamped.
+        _req("PATCH", f"/sp500_forecasts?model_id=eq.{mid}&code_hash=is.null", {"code_hash": chash})
 
     if as_of is not None and forecast is not None:
-        _req("POST", "/sp500_forecasts?on_conflict=model_id,as_of",
-             {"model_id": mid, "as_of": as_of, "forecast": forecast, "code_hash": chash})
+        row = {"model_id": mid, "as_of": as_of, "forecast": forecast}
+        if HAS_CODE_HASH:
+            row["code_hash"] = chash
+        _req("POST", "/sp500_forecasts?on_conflict=model_id,as_of", row)
 
     # Realize past forecasts whose next session now exists (next-session return after as_of).
     pending = _req("GET", f"/sp500_forecasts?model_id=eq.{mid}&realized=is.null&select=as_of,forecast") or []
@@ -156,8 +177,9 @@ def update_live_track(mid: str, as_of: str, forecast, dates: list[str], closes: 
         _req("PATCH", f"/sp500_forecasts?model_id=eq.{mid}&as_of=eq.{row['as_of']}",
              {"realized": realized, "pnl": s * realized})
 
+    scope = f"&code_hash=eq.{chash}" if HAS_CODE_HASH else ""
     realized_rows = _req(
-        "GET", f"/sp500_forecasts?model_id=eq.{mid}&pnl=not.is.null&code_hash=eq.{chash}&select=pnl") or []
+        "GET", f"/sp500_forecasts?model_id=eq.{mid}&pnl=not.is.null{scope}&select=pnl") or []
     import numpy as np
     pnls = np.array([r["pnl"] for r in realized_rows], dtype=float)
     if not len(pnls):
@@ -184,6 +206,12 @@ def main():
 
     dates = [d.date().isoformat() for d in close.index]
     closes = [float(v) for v in close.values]
+
+    global HAS_CODE_HASH
+    HAS_CODE_HASH = _column_exists("sp500_forecasts", "code_hash")
+    if not HAS_CODE_HASH:
+        print("   note: sp500_forecasts.code_hash absent — live track unscoped until the migration "
+              "(20260731_sp500_forecast_code_hash.sql) is applied")
 
     models = fetch_models()
     print(f"scoring {len(models)} models...")
