@@ -1,8 +1,8 @@
 """
 grader_worker.py — Polls Supabase for pending submissions and grades them.
 
-Deploy as a separate Railway service (same Docker image, different start command):
-    python deploy/grader_worker.py
+Deploy as a Railway cron service that drains pending work and exits:
+    python deploy/grader_worker.py --once
 
 Required env vars:
     NEXT_PUBLIC_SUPABASE_URL — your project URL (same var as the web platform)
@@ -17,10 +17,11 @@ Per-cohort overrides (stored in cohorts.market_config JSONB):
                                 start_day, end_day} dicts; replaces default alphas
 
 Security model:
-    - Student code runs in a subprocess with a 30s hard timeout.
+    - Student code runs in a credential-free subprocess with time/resource limits.
+    - A Docker sandbox adds network and filesystem isolation when explicitly configured.
     - Blocked imports are checked before execution (belt-and-suspenders with the API route check).
     - Each submission runs in a temp directory, isolated from other submissions.
-    - The service role key is never exposed to student code.
+    - Deployment credentials are never inherited by student code.
 """
 
 from __future__ import annotations
@@ -28,12 +29,16 @@ import os
 import sys
 import json
 import time
+import argparse
 import logging
 import tempfile
 import textwrap
 import subprocess
 import traceback
 from pathlib import Path
+
+if sys.platform.startswith("linux"):
+    import resource
 
 import urllib.request
 import urllib.error
@@ -73,6 +78,7 @@ N_DAYS          = int(os.environ.get("MARKET_N_DAYS", "1260"))
 POLL_SECONDS    = float(os.environ.get("POLL_SECONDS", "5"))
 TIMEOUT_SECS    = int(os.environ.get("GRADE_TIMEOUT", "60"))
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
+MAX_SUBMISSIONS_PER_RUN = int(os.environ.get("MAX_SUBMISSIONS_PER_RUN", "20"))
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +202,7 @@ def notify_grade_failed(sub_id: str, message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Grade runner — executes in a subprocess to isolate student code
+# Grade runner — executes with a clean environment in a bounded subprocess
 # ---------------------------------------------------------------------------
 
 # The runner always builds the market + grader the same way; only the strategy-execution middle
@@ -260,7 +266,9 @@ BLOCKED_PATTERNS = [
     "import requests", "__import__", "open(", "eval(", "exec(",
 ]
 
-# Docker sandbox config — set GRADER_DOCKER_IMAGE to enable; falls back to subprocess
+# Docker sandbox config — set GRADER_DOCKER_IMAGE to enable network/filesystem
+# isolation. The fallback still strips credentials and applies POSIX limits,
+# but it isn't a complete security boundary against hostile native code.
 DOCKER_IMAGE   = os.environ.get("GRADER_DOCKER_IMAGE", "")
 DOCKER_TIMEOUT = TIMEOUT_SECS + 5  # outer timeout slightly larger than inner
 
@@ -274,6 +282,36 @@ def _docker_available() -> bool:
         return False
 
 _USE_DOCKER: bool | None = None  # resolved lazily once
+
+
+def _sandbox_env(tmpdir: str) -> dict[str, str]:
+    """Return a minimal environment with no host or deployment credentials."""
+    clean = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": tmpdir,
+        "TMPDIR": tmpdir,
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONUNBUFFERED": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+    }
+    for name in ("LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT"):
+        if os.environ.get(name):
+            clean[name] = os.environ[name]
+    return clean
+
+
+def _limit_subprocess_resources() -> None:
+    """Apply defense-in-depth limits to the non-Docker fallback on POSIX."""
+    if not sys.platform.startswith("linux"):
+        return
+    memory_bytes = 768 * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+    resource.setrlimit(resource.RLIMIT_CPU, (TIMEOUT_SECS, TIMEOUT_SECS + 1))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
 def _run_script(script_path: str, tmpdir: str) -> subprocess.CompletedProcess:
@@ -306,6 +344,10 @@ def _run_script(script_path: str, tmpdir: str) -> subprocess.CompletedProcess:
         text=True,
         timeout=DOCKER_TIMEOUT if _USE_DOCKER else TIMEOUT_SECS,
         cwd=tmpdir,
+        env=None if _USE_DOCKER else _sandbox_env(tmpdir),
+        preexec_fn=(None if _USE_DOCKER or not sys.platform.startswith("linux")
+                    else _limit_subprocess_resources),
+        start_new_session=not _USE_DOCKER,
     )
 
 
@@ -410,27 +452,50 @@ def grade_submission(submission: dict) -> None:
 # Poll loop
 # ---------------------------------------------------------------------------
 
-WORKER_BUILD = "2026-06-30-multilang-3"  # bump to confirm which image Railway is actually running
+WORKER_BUILD = "2026-10-27-cron-1"  # bump to confirm which image Railway is actually running
 
-def main():
+def _grade_pending_once() -> int:
+    """Drain a bounded batch and return the number of submissions processed."""
+    processed = 0
+    while processed < MAX_SUBMISSIONS_PER_RUN:
+        pending = fetch_pending()
+        if not pending:
+            break
+        log.info("found %d pending submission(s)", len(pending))
+        for sub in pending[:MAX_SUBMISSIONS_PER_RUN - processed]:
+            try:
+                grade_submission(sub)
+            except Exception:
+                log.exception("unexpected error grading submission=%s", sub["id"][:8])
+                mark_failed(sub["id"], traceback.format_exc()[-2000:])
+            processed += 1
+        if len(pending) < 5:
+            break
+    return processed
+
+
+def main(*, run_once: bool = False):
     log.info("grader worker started  build=%s  languages=python,r,julia  "
-             "seed=%d  stocks=%d  days=%d  poll=%.1fs  timeout=%ds",
-             WORKER_BUILD, MARKET_SEED, N_STOCKS, N_DAYS, POLL_SECONDS, TIMEOUT_SECS)
+             "seed=%d  stocks=%d  days=%d  mode=%s  poll=%.1fs  timeout=%ds",
+             WORKER_BUILD, MARKET_SEED, N_STOCKS, N_DAYS,
+             "once" if run_once else "continuous", POLL_SECONDS, TIMEOUT_SECS)
+    if run_once:
+        processed = _grade_pending_once()
+        log.info("grader run complete  processed=%d", processed)
+        return
+
     while True:
         try:
-            pending = fetch_pending()
-            if pending:
-                log.info("found %d pending submission(s)", len(pending))
-            for sub in pending:
-                try:
-                    grade_submission(sub)
-                except Exception:
-                    log.exception("unexpected error grading submission=%s", sub["id"][:8])
-                    mark_failed(sub["id"], traceback.format_exc()[-2000:])
+            _grade_pending_once()
         except Exception:
             log.exception("poll loop error")
         time.sleep(POLL_SECONDS)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="ConvexPi submission grader")
+    parser.add_argument(
+        "--once", action="store_true",
+        help="Drain a bounded batch and exit (for Railway cron jobs)",
+    )
+    main(run_once=parser.parse_args().once)

@@ -31,8 +31,8 @@ RUN pip install --no-cache-dir .
 # Required env vars (set in Railway):
 #   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_KEY, MARKET_SEED
 # Optional:
-#   MARKET_N_STOCKS, MARKET_N_DAYS, POLL_SECONDS, GRADE_TIMEOUT
+#   MARKET_N_STOCKS, MARKET_N_DAYS, GRADE_TIMEOUT, MAX_SUBMISSIONS_PER_RUN
 #   GRADER_DOCKER_IMAGE  — set to enable Docker sandbox isolation
 #   SENTRY_DSN           — set to enable Sentry error monitoring
 
-CMD ["python", "deploy/grader_worker.py"]
+CMD ["python", "deploy/grader_worker.py", "--once"]

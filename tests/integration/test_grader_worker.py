@@ -245,3 +245,36 @@ class TestFetchPending:
         with patch.object(grader_module, "_req", return_value=None):
             result = grader_module.fetch_pending()
         assert result == []
+
+
+class TestWorkerLifecycle:
+    def test_one_shot_drains_pending_and_exits(self, grader_module):
+        submissions = [make_submission() for _ in range(5)]
+        with (
+            patch.object(grader_module, "fetch_pending", side_effect=[submissions, []]),
+            patch.object(grader_module, "grade_submission") as grade,
+        ):
+            assert grader_module._grade_pending_once() == 5
+            assert grade.call_count == 5
+
+    def test_run_once_never_sleeps(self, grader_module):
+        with (
+            patch.object(grader_module, "_grade_pending_once", return_value=0) as drain,
+            patch.object(grader_module.time, "sleep") as sleep,
+        ):
+            grader_module.main(run_once=True)
+        drain.assert_called_once_with()
+        sleep.assert_not_called()
+
+
+class TestSubprocessIsolation:
+    def test_sandbox_environment_excludes_deployment_secrets(
+        self, grader_module, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("SUPABASE_SERVICE_KEY", "must-not-reach-student-code")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "also-secret")
+        env = grader_module._sandbox_env(str(tmp_path))
+        assert "SUPABASE_SERVICE_KEY" not in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert env["HOME"] == str(tmp_path)
+        assert env["TMPDIR"] == str(tmp_path)
