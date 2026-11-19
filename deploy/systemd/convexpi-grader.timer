@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the ConvexPi grading queue every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+Unit=convexpi-grader.service
+
+[Install]
+WantedBy=timers.target

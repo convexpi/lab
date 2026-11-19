@@ -1,10 +1,12 @@
 # Railway configuration for the ConvexPi grader service.
-# Deploy this repo as a Railway service; Railway reads this file automatically.
+# Requires a reachable Docker daemon with shared temporary paths; see deploy/SECURITY.md.
+# A Railway worker without that execution boundary now fails closed.
 #
 # Required env vars (set in Railway dashboard → Variables):
 #   NEXT_PUBLIC_SUPABASE_URL  — Supabase project URL
 #   SUPABASE_SERVICE_KEY      — Service role key (bypasses RLS)
 #   MARKET_SEED               — Secret integer seed for the hidden OOS market
+#   GRADER_DOCKER_IMAGE       — Prebuilt credential-free sandbox image
 #
 # Optional:
 #   MARKET_N_STOCKS           — default 200
@@ -19,5 +21,6 @@ dockerfilePath = "deploy/Dockerfile.grader"
 
 [deploy]
 startCommand = "python deploy/grader_worker.py --once"
-cronSchedule = "*/5 * * * *"
+# No Railway schedule: this platform has no isolated Docker runtime. Schedule
+# deploy/compose.yaml on the dedicated host using deploy/systemd instead.
 restartPolicyType = "NEVER"

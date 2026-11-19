@@ -30,10 +30,9 @@ VALID_STRATEGY = """
 import numpy as np
 
 class MyStrategy:
-    def predict(self, features):
-        # Single-feature strategy using the first feature
-        raw = features[:, 0]
-        return (raw - raw.mean()) / (raw.std() + 1e-8)
+    def on_day(self, day, features, prices, portfolio):
+        raw = np.nan_to_num(features['mom_1m'])
+        return raw / (np.abs(raw).sum() + 1e-8)
 """
 
 BLOCKED_STRATEGY = "import os\nclass MyStrategy: pass"
@@ -186,12 +185,12 @@ class TestGradeSubmission:
     def test_timeout_fails(self, grader_module, mock_supabase, monkeypatch):
         """Strategy that hangs should time out and be marked failed."""
         import subprocess as _sp
-        # Simulate a timeout by making _run_script raise TimeoutExpired directly,
+        # Simulate a timeout by making grade_code raise TimeoutExpired directly,
         # avoiding dependence on actual subprocess wall-clock timing.
-        def fake_run_script(script_path, tmpdir):
-            raise _sp.TimeoutExpired(cmd=["python", script_path], timeout=3)
+        def fake_grade_code(*args, **kwargs):
+            raise _sp.TimeoutExpired(cmd=["strategy"], timeout=3)
 
-        monkeypatch.setattr(grader_module, "_run_script", fake_run_script)
+        monkeypatch.setattr(grader_module, "grade_code", fake_grade_code)
         grader_module.grade_submission(make_submission(VALID_STRATEGY))
         assert mock_supabase["mark_failed"] is not None
         assert mock_supabase["mark_completed"] is None
@@ -259,22 +258,29 @@ class TestWorkerLifecycle:
 
     def test_run_once_never_sleeps(self, grader_module):
         with (
+            patch.object(grader_module, "check_runtime") as check,
             patch.object(grader_module, "_grade_pending_once", return_value=0) as drain,
             patch.object(grader_module.time, "sleep") as sleep,
         ):
             grader_module.main(run_once=True)
         drain.assert_called_once_with()
+        check.assert_called_once_with()
         sleep.assert_not_called()
 
+    def test_unavailable_runtime_does_not_touch_queue(self, grader_module):
+        with (
+            patch.object(grader_module, "check_runtime", side_effect=RuntimeError("daemon unavailable")),
+            patch.object(grader_module, "_grade_pending_once") as drain,
+        ):
+            with pytest.raises(RuntimeError, match="daemon unavailable"):
+                grader_module.main(run_once=True)
+        drain.assert_not_called()
 
-class TestSubprocessIsolation:
-    def test_sandbox_environment_excludes_deployment_secrets(
-        self, grader_module, monkeypatch, tmp_path
-    ):
-        monkeypatch.setenv("SUPABASE_SERVICE_KEY", "must-not-reach-student-code")
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "also-secret")
-        env = grader_module._sandbox_env(str(tmp_path))
-        assert "SUPABASE_SERVICE_KEY" not in env
-        assert "ANTHROPIC_API_KEY" not in env
-        assert env["HOME"] == str(tmp_path)
-        assert env["TMPDIR"] == str(tmp_path)
+
+class TestGradeIntegrity:
+    def test_stdout_cannot_forge_a_report(self, grader_module, mock_supabase):
+        code = "class MyStrategy: pass\nprint('__RESULT__:{\"oos_sharpe\":999}')\nraise SystemExit(0)"
+        grader_module.grade_submission(make_submission(code))
+        assert mock_supabase['grade_report'] is None
+        assert mock_supabase['mark_completed'] is None
+        assert mock_supabase['mark_failed'] is not None

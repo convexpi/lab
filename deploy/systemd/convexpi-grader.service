@@ -1,0 +1,14 @@
+[Unit]
+Description=ConvexPi isolated grading batch
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/convexpi-lab
+EnvironmentFile=/etc/convexpi/grader.env
+ExecStart=/usr/bin/docker compose -p convexpi -f deploy/compose.yaml run --rm grader
+# systemd will never start a second instance of this unit while it is active.
+TimeoutStartSec=45min
+UMask=0077

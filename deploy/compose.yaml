@@ -1,0 +1,33 @@
+services:
+  sandbox:
+    profiles: [build]
+    image: ${GRADER_DOCKER_IMAGE:-convexpi-sandbox:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.sandbox
+
+  grader:
+    image: convexpi-grader:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.grader
+    init: true
+    environment:
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:?Set the target Supabase URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:?Set the target service key}
+      MARKET_SEED: ${MARKET_SEED:?Set a private market seed}
+      MARKET_N_STOCKS: ${MARKET_N_STOCKS:-200}
+      MARKET_N_DAYS: ${MARKET_N_DAYS:-1260}
+      GRADE_TIMEOUT: ${GRADE_TIMEOUT:-60}
+      MAX_SUBMISSIONS_PER_RUN: ${MAX_SUBMISSIONS_PER_RUN:-20}
+      GRADER_DOCKER_IMAGE: ${GRADER_DOCKER_IMAGE:-convexpi-sandbox:local}
+      TMPDIR: ${SANDBOX_TMPDIR:?Set an absolute host directory for sandbox inputs}
+    volumes:
+      # Only this trusted coordinator gets the daemon socket. Submitted code does not.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${SANDBOX_TMPDIR}
+        target: ${SANDBOX_TMPDIR}
+        bind:
+          create_host_path: false
+    command: [python, deploy/grader_worker.py, --once]

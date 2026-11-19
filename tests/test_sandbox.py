@@ -120,3 +120,77 @@ def test_runaway_loop_is_killed():
     except subprocess.TimeoutExpired:
         return
     assert out.returncode != 0, "runaway loop exited cleanly — no limit was enforced"
+
+
+def test_no_host_execution_without_container_configuration(monkeypatch):
+    from sandbox import SandboxUnavailable
+    monkeypatch.delenv('GRADER_DOCKER_IMAGE', raising=False)
+    with pytest.raises(SandboxUnavailable):
+        run("raise AssertionError('must never execute on the host')")
+
+
+def test_rejects_indirect_stdlib_import():
+    with pytest.raises(Rejected):
+        validate("from dataclasses import sys\ndef predict(h):\n    return len(sys.modules)\n")
+
+
+def test_container_cannot_see_host_file_or_reach_network(tmp_path):
+    path = tmp_path / 'credential'
+    path.write_text('host-private-value')
+    out = run(f'''import os, socket
+assert not os.path.exists({str(path)!r})
+try:
+    socket.create_connection(('1.1.1.1', 443), timeout=1)
+except OSError:
+    print('isolated')
+else:
+    raise AssertionError('network available')
+''', timeout=30)
+    assert out.returncode == 0
+    assert out.stdout.strip() == 'isolated'
+
+
+def test_timeout_removes_container_and_its_child_processes():
+    from sandbox import Session
+    script = """import subprocess, sys, time
+subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])
+print('ready', flush=True)
+time.sleep(120)
+"""
+    session = Session({'run.py': script}, ['/usr/local/bin/python', '/submission/run.py'], timeout=5)
+    with pytest.raises(subprocess.TimeoutExpired):
+        with session:
+            assert session.receive() == 'ready'
+            session.receive()
+    inspection = subprocess.run(['docker', 'inspect', session.name], capture_output=True)
+    assert inspection.returncode != 0, 'timed-out strategy container survived cleanup'
+    assert session.tmp is None
+
+
+def test_output_flood_is_bounded_and_container_removed():
+    from sandbox import Session, SandboxError
+    script = "print('x' * (2 * 1024 * 1024), flush=True)"
+    session = Session({'run.py': script}, ['/usr/local/bin/python', '/submission/run.py'], timeout=30)
+    with pytest.raises(SandboxError, match='response limit'):
+        with session:
+            session.receive()
+    assert subprocess.run(['docker', 'inspect', session.name], capture_output=True).returncode != 0
+
+
+def test_failed_daemon_cleanup_still_releases_local_resources(monkeypatch, tmp_path):
+    import io
+    import tempfile
+    from unittest.mock import Mock
+    from sandbox import Session
+    session = Session({}, [])
+    session.tmp = tempfile.TemporaryDirectory(dir=tmp_path)
+    directory = Path(session.tmp.name)
+    proc = Mock(stdin=io.BytesIO(), stdout=io.BytesIO(), stderr=io.BytesIO())
+    session.proc = proc
+    monkeypatch.setattr(subprocess, 'run', Mock(side_effect=subprocess.TimeoutExpired('docker rm', 10)))
+    with pytest.raises(subprocess.TimeoutExpired):
+        session.close()
+    assert not directory.exists()
+    assert proc.stdin.closed and proc.stdout.closed and proc.stderr.closed
+    proc.kill.assert_called_once()
+    session.close()  # repeated cleanup is safe

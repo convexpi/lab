@@ -1,35 +1,19 @@
-"""
-sandbox.py — validate and execute untrusted, user-submitted Python.
+"""Execution boundary for hosted, untrusted code.
 
-The competition runners execute code that anyone on the internet can submit. The original guard was
-a substring blocklist (`"import os" in code.lower()`), which is not a guard at all: `import  os`
-with two spaces passes it, as does building the name at runtime
-(`__builtins__.__dict__['__imp' + 'ort__']`). Worse, the child inherited the parent's environment,
-so anything that got through could read SUPABASE_SERVICE_KEY straight out of `os.environ`.
-
-This module replaces that with three independent layers:
-
-1. `validate()` — an AST walk. Imports must be on an allowlist, and the escape hatches (`eval`,
-   `getattr`, dunder attribute access, …) are rejected outright. Because it parses rather than
-   greps, whitespace and string-concatenation tricks don't help.
-2. `child_env()` — a minimal environment. The child never sees the service key, the GitHub token,
-   or anything else the parent holds, so a successful escape still has no credentials to steal.
-3. `run()` — POSIX resource limits (CPU, address space, file size, no new processes) and an
-   isolated working directory, so runaway or malicious code can't exhaust the host or fork-bomb.
-
-This is defence in depth, not true isolation. A determined escape through a C extension is still
-conceivable, and only a container or VM boundary closes that. `deploy/Dockerfile.grader` already
-carries the container pattern (`--network none --read-only --memory 512m`); routing this runner
-through it is the next step if the threat model warrants it. What's here removes the trivially
-exploitable paths and, critically, removes the credentials from the blast radius.
+Validation gives early feedback only: Python libraries expose capabilities that an
+AST allowlist cannot contain. Every hosted execution requires a Docker container;
+missing configuration/runtime fails closed. Never mount credentials or market data.
 """
 from __future__ import annotations
 
 import ast
 import os
 import subprocess
-import sys
 import tempfile
+import selectors
+import time
+import threading
+import uuid
 
 # Third-party modules a forecasting model has a legitimate reason to import. Everything else — os,
 # sys, socket, subprocess, ctypes, importlib, pickle — is denied by omission rather than listed,
@@ -46,7 +30,7 @@ ALLOWED_IMPORTS = frozenset({
 FORBIDDEN_NAMES = frozenset({
     "eval", "exec", "compile", "open", "input", "breakpoint", "__import__",
     "globals", "locals", "vars", "getattr", "setattr", "delattr",
-    "memoryview", "exit", "quit", "help", "copyright", "credits", "license",
+    "sys", "os", "subprocess", "socket", "ctypes", "importlib", "memoryview", "exit", "quit", "help", "copyright", "credits", "license",
 })
 
 MAX_CODE_BYTES = 20_000
@@ -81,6 +65,8 @@ def validate(code: str) -> None:
             root = (node.module or "").split(".")[0]
             if node.level:                       # `from . import x` — no package to import from
                 raise Rejected(f"Relative imports are not allowed (line {node.lineno}).")
+            if any(a.name in FORBIDDEN_NAMES or a.name.startswith("_") or a.name == "*" for a in node.names):
+                raise Rejected(f"Unsafe imported name (line {node.lineno}).")
             if root not in ALLOWED_IMPORTS:
                 raise Rejected(f"Import from '{node.module}' is not allowed (line {node.lineno}).")
 
@@ -115,7 +101,7 @@ def child_env(tmpdir: str) -> dict[str, str]:
     exfiltrate.
     """
     return {
-        "PATH": "/usr/bin:/bin",
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
         "HOME": tmpdir,
         "TMPDIR": tmpdir,
         "LANG": "C.UTF-8",
@@ -128,63 +114,157 @@ def child_env(tmpdir: str) -> dict[str, str]:
     }
 
 
-def _limits(cpu_seconds: int, memory_mb: int):
-    """Build a preexec_fn applying POSIX rlimits, or None where `resource` is unavailable."""
-    try:
-        import resource
-    except ImportError:                                    # non-POSIX; caller still gets the timeout
-        return None
-
-    def _set(which: int, soft: int) -> None:
-        """Lower one limit, never raising. Anything that fails here must not kill a legitimate run.
-
-        The soft limit is clamped to the inherited hard limit — asking for more than the hard limit
-        is a ValueError, and an unprivileged process cannot raise the hard limit back up.
-        """
-        try:
-            _, hard = resource.getrlimit(which)
-            if hard != resource.RLIM_INFINITY:
-                soft = min(soft, hard)
-            resource.setrlimit(which, (soft, hard))
-        except (ValueError, OSError, AttributeError):
-            pass
-
-    def apply() -> None:
-        # CPU seconds — catches an infinite loop that a wall-clock timeout would only catch later.
-        _set(resource.RLIMIT_CPU, cpu_seconds)
-        # Files: enough for scratch, not enough to fill the disk.
-        _set(resource.RLIMIT_FSIZE, 32 * 1024 * 1024)
-        _set(resource.RLIMIT_CORE, 0)
-        # Address space. Skipped on macOS: the allocator reserves large virtual regions there, so an
-        # RLIMIT_AS low enough to be useful stops numpy from importing at all. Linux — where the
-        # runner actually executes — enforces it.
-        if sys.platform.startswith("linux"):
-            _set(resource.RLIMIT_AS, memory_mb * 1024 * 1024)
-        # Deliberately no RLIMIT_NPROC: it counts every process owned by the UID, not just this
-        # subtree, and pthread_create is charged against it — numpy would fail to import. Blocking
-        # subprocess/os at the import allowlist is what stops shelling out here.
-
-    return apply
+class SandboxUnavailable(RuntimeError):
+    """No configured, working container runtime. Never fall back to host execution."""
 
 
-def run(script: str, *, timeout: int = 60, cpu_seconds: int = 45,
-        memory_mb: int = 2048) -> subprocess.CompletedProcess:
-    """Execute `script` in a stripped environment, under rlimits, in a throwaway directory.
+class SandboxError(RuntimeError):
+    """The strategy process exited or violated the bounded response protocol."""
 
-    `script` is the full program text (harness + submitted code), already validated.
+
+class Session:
+    """A credential-free container, exchanging one bounded line at a time.
+
+    Only the supplied code/harness files are mounted. The market, worker filesystem,
+    daemon socket and deployment environment are never exposed to the container.
+    The deadline covers startup and every request, including blocked writes.
     """
-    with tempfile.TemporaryDirectory(prefix="sandbox-") as tmpdir:
-        path = os.path.join(tmpdir, "run.py")
-        with open(path, "w") as f:
-            f.write(script)
-        return subprocess.run(
-            # -I isolates the interpreter: no PYTHON* env vars, no user site-packages, cwd off
-            # sys.path. Not -S — that would drop site-packages and numpy with it.
-            [sys.executable, "-I", path],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=tmpdir,
-            env=child_env(tmpdir),
-            preexec_fn=_limits(cpu_seconds, memory_mb),
-        )
+    def __init__(self, files, command, *, timeout=60, memory_mb=2048, cpu_seconds=45):
+        self.files, self.command = files, command
+        self.timeout, self.memory_mb, self.cpu_seconds = timeout, memory_mb, cpu_seconds
+        self.proc = None
+        self.tmp = None
+        self.name = "convexpi-" + uuid.uuid4().hex
+        self.buffer = bytearray()
+        self.deadline = 0.0
+        self.stderr = b""
+        self.stderr_thread = None
+
+    def __enter__(self):
+        image = os.environ.get("GRADER_DOCKER_IMAGE")
+        if not image:
+            raise SandboxUnavailable("GRADER_DOCKER_IMAGE is required; host execution is disabled")
+        self.tmp = tempfile.TemporaryDirectory(prefix="convexpi-sandbox-")
+        try:
+            # The unprivileged container user needs read access to these non-secret files.
+            os.chmod(self.tmp.name, 0o755)
+            for name, content in self.files.items():
+                if name != os.path.basename(name):
+                    raise ValueError("sandbox file names must be basenames")
+                path = os.path.join(self.tmp.name, name)
+                with open(path, "w") as f:
+                    f.write(content)
+                os.chmod(path, 0o644)
+            cmd = ["docker", "run", "--rm", "--pull=never", "--name", self.name,
+                   "--network=none", "--read-only", "--cap-drop=ALL",
+                   "--security-opt=no-new-privileges", "--user=65534:65534",
+                   "--pids-limit=64", "--memory", f"{self.memory_mb}m",
+                   "--memory-swap", f"{self.memory_mb}m", "--cpus=1",
+                   "--ulimit", f"cpu={self.cpu_seconds}:{self.cpu_seconds}",
+                   "--ulimit", "fsize=33554432:33554432", "--ulimit", "core=0:0",
+                   "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m,mode=1777",
+                   "--mount", f"type=bind,src={self.tmp.name},dst=/submission,readonly",
+                   "--workdir=/tmp", "--log-driver=none", "-i"]
+            # Explicit values only; never `-e NAME`, which copies from the host.
+            for key, value in child_env("/tmp").items():
+                cmd += ["--env", f"{key}={value}"]
+            cmd += ["--entrypoint", self.command[0], image, *self.command[1:]]
+            self.deadline = time.monotonic() + self.timeout
+            self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE, bufsize=0)
+            error_pipe = self.proc.stderr
+
+            def drain_errors():
+                try:
+                    while chunk := error_pipe.read(4096):
+                        self.stderr = (self.stderr + chunk)[-4096:]
+                except (OSError, ValueError):
+                    pass  # cleanup may close a pipe after stopping the Docker client
+            self.stderr_thread = threading.Thread(target=drain_errors, daemon=True)
+            self.stderr_thread.start()
+            os.set_blocking(self.proc.stdin.fileno(), False)
+            os.set_blocking(self.proc.stdout.fileno(), False)
+            return self
+        except Exception:
+            self.close()
+            raise
+
+    def _ready(self, pipe, event):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(self.command, self.timeout)
+        with selectors.DefaultSelector() as sel:
+            sel.register(pipe, event)
+            if not sel.select(remaining):
+                raise subprocess.TimeoutExpired(self.command, self.timeout)
+
+    def exchange(self, message):
+        raw = (message + "\n").encode()
+        if len(raw) > 4 * 1024 * 1024:
+            raise SandboxError("input exceeds sandbox request limit")
+        view = memoryview(raw)
+        while view:
+            self._ready(self.proc.stdin, selectors.EVENT_WRITE)
+            try:
+                written = os.write(self.proc.stdin.fileno(), view)
+            except BrokenPipeError as e:
+                raise SandboxError("strategy process exited before returning a decision: " + self.stderr.decode("utf-8", errors="replace")[-1000:]) from e
+            view = view[written:]
+        return self.receive()
+
+    def receive(self):
+        while b"\n" not in self.buffer:
+            self._ready(self.proc.stdout, selectors.EVENT_READ)
+            chunk = os.read(self.proc.stdout.fileno(), 65536)
+            if not chunk:
+                raise SandboxError("strategy process exited before returning a decision: " + self.stderr.decode("utf-8", errors="replace")[-1000:])
+            self.buffer.extend(chunk)
+            if len(self.buffer) > 1024 * 1024:
+                raise SandboxError("strategy output exceeds sandbox response limit")
+        line, _, remaining = self.buffer.partition(b"\n")
+        self.buffer = bytearray(remaining)
+        return line.decode("utf-8")
+
+    def close(self):
+        proc, self.proc = self.proc, None
+        try:
+            if proc is not None:
+                # Killing the Docker client does not kill its container. Remove it
+                # explicitly, including descendants, even on a request timeout.
+                try:
+                    subprocess.run(["docker", "rm", "-f", self.name],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                finally:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=10)
+                    finally:
+                        if self.stderr_thread is not None:
+                            self.stderr_thread.join(timeout=1)
+                        for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                            pipe.close()
+        finally:
+            if self.tmp is not None:
+                self.tmp.cleanup()
+                self.tmp = None
+
+    def __exit__(self, *_):
+        self.close()
+
+
+def run(script: str, *, timeout=60, cpu_seconds=45, memory_mb=2048):
+    """Execute a standalone diagnostic script in the same mandatory container boundary."""
+    with Session({"run.py": script}, ["/usr/local/bin/python", "-I", "/submission/run.py"],
+                 timeout=timeout, cpu_seconds=cpu_seconds, memory_mb=memory_mb) as session:
+        session.proc.stdin.close()
+        output = bytearray()
+        while True:
+            session._ready(session.proc.stdout, selectors.EVENT_READ)
+            chunk = os.read(session.proc.stdout.fileno(), 65536)
+            if not chunk:
+                break
+            output.extend(chunk)
+            if len(output) > 1024 * 1024:
+                raise SandboxError("script output exceeds sandbox response limit")
+        session.proc.wait(timeout=max(0.01, session.deadline - time.monotonic()))
+        return subprocess.CompletedProcess(session.command, session.proc.returncode, output.decode(), session.stderr.decode("utf-8", errors="replace"))

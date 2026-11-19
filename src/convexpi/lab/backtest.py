@@ -112,7 +112,7 @@ class BacktestResult:
     @property
     def max_drawdown(self) -> float:
         """Maximum peak-to-trough drawdown (positive number)."""
-        cum = np.cumprod(1 + self.daily_returns)
+        cum = np.concatenate(([1.0], np.cumprod(1 + self.daily_returns)))
         peak = np.maximum.accumulate(cum)
         dd = (cum - peak) / np.maximum(peak, 1e-9)
         return float(-dd.min())

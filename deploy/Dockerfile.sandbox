@@ -1,0 +1,19 @@
+# Contains only runtime libraries and SDK code, never worker credentials or market data.
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends r-base-core curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+ARG JULIA_VERSION=1.10.5
+ARG TARGETARCH
+RUN case "$TARGETARCH" in arm64) arch=aarch64; dir=aarch64 ;; *) arch=x86_64; dir=x64 ;; esac \
+    && curl -fsSL "https://julialang-s3.julialang.org/bin/linux/$dir/1.10/julia-${JULIA_VERSION}-linux-${arch}.tar.gz" \
+       | tar -xz -C /opt \
+    && ln -s /opt/julia-${JULIA_VERSION}/bin/julia /usr/local/bin/julia
+COPY deploy/clear_execstack.py /tmp/clear_execstack.py
+RUN python /tmp/clear_execstack.py /opt/julia-${JULIA_VERSION}/lib && rm /tmp/clear_execstack.py
+WORKDIR /opt/sdk
+COPY pyproject.toml README.md ./
+COPY src/ src/
+RUN pip install --no-cache-dir . scikit-learn statsmodels
+ENV JULIA_DEPOT_PATH=/tmp/julia
+USER 65534:65534
+WORKDIR /tmp

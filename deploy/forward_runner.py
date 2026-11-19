@@ -5,7 +5,7 @@ For each completed submission, runs the strategy on a fresh synthetic market
 window (seeded by today's date) and upserts one row into forward_scores.
 The leaderboard then shows rolling forward Sharpe alongside backtest Sharpe.
 
-Run once per day (cron, Railway cron service, or GitHub Actions schedule):
+Run once per day on the dedicated Docker host:
     python deploy/forward_runner.py
 
 Required env vars (same as grader_worker):
@@ -24,16 +24,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import sys
-import tempfile
-import textwrap
 import time
 import traceback
 import urllib.request
 import urllib.error
 from datetime import date, timedelta
-from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,8 +46,6 @@ WINDOW_DAYS     = int(os.environ.get("FORWARD_WINDOW_DAYS", "60"))
 N_STOCKS        = int(os.environ.get("FORWARD_N_STOCKS", "100"))
 TIMEOUT_SECS    = int(os.environ.get("GRADE_TIMEOUT", "120"))
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
-
-PKG_PATH = str(Path(__file__).parent.parent / "src")
 
 # Seed is deterministic per calendar date so re-runs are idempotent
 EPOCH = date(2020, 1, 1)
@@ -90,7 +84,7 @@ def _req(method: str, path: str, body: dict | None = None):
 
 
 def fetch_completed_submissions() -> list[dict]:
-    result = _req("GET", "/submissions?status=eq.completed&select=id,cohort_id,code&limit=500")
+    result = _req("GET", "/submissions?status=eq.completed&select=id,cohort_id,code,language&limit=500")
     return result or []
 
 
@@ -112,64 +106,27 @@ def upsert_score(submission_id: str, run_date: date, seed: int, metrics: dict) -
 
 
 # ---------------------------------------------------------------------------
-# Runner template (reuses grader runner pattern)
+# Forward decisions and scores use the same boundary as initial grading.
 # ---------------------------------------------------------------------------
-
-RUNNER_TEMPLATE = textwrap.dedent("""\
-    import sys, json
-    sys.path.insert(0, {pkg_path!r})
-
-    from convexpi.lab.synth import SyntheticMarket
-    from convexpi.lab.grader import Grader
-
-    {user_code}
-
-    market = SyntheticMarket(
-        n_stocks={n_stocks},
-        n_days={n_days},
-        seed={seed},
-    )
-    report = Grader(market).evaluate(MyStrategy())
-    result = {{
-        "oos_sharpe":        report.oos_sharpe,
-        "oos_annual_return": report.oos_annual_return,
-        "oos_max_dd":        report.oos_max_dd,
-    }}
-    print("__RESULT__:" + json.dumps(result))
-""")
+try:
+    from .evaluation import StrategyProcess, score_strategy
+except ImportError:
+    from evaluation import StrategyProcess, score_strategy
+from convexpi.lab import SyntheticMarket, Backtest
 
 
-def evaluate_submission(sub_id: str, code: str, seed: int) -> dict | None:
-    runner = RUNNER_TEMPLATE.format(
-        pkg_path=PKG_PATH,
-        user_code=code,
-        n_stocks=N_STOCKS,
-        n_days=WINDOW_DAYS + 20,   # small buffer for IS warmup
-        seed=seed,
-    )
-    with tempfile.TemporaryDirectory() as tmpdir:
-        script = Path(tmpdir) / "forward_runner.py"
-        script.write_text(runner)
-        try:
-            result = subprocess.run(
-                [sys.executable, str(script)],
-                capture_output=True, text=True,
-                timeout=TIMEOUT_SECS,
-                cwd=tmpdir,
-            )
-        except subprocess.TimeoutExpired:
-            log.warning("submission=%s forward eval timed out", sub_id[:8])
-            return None
-
-    if result.returncode != 0 or "__RESULT__:" not in result.stdout:
-        log.warning("submission=%s forward eval error: %s", sub_id[:8], result.stderr[:200])
-        return None
-
+def evaluate_submission(sub_id: str, code: str, seed: int, language: str = "python") -> dict | None:
+    warmup = 252
+    # Generate historical features first, then score exactly WINDOW_DAYS transitions.
+    market = SyntheticMarket(n_stocks=N_STOCKS, n_days=warmup + WINDOW_DAYS + 1, seed=seed)
+    backtest = Backtest(warmup_days=warmup, rebalance_every=5, tc_bps=market.tc_bps)
     try:
-        json_str = result.stdout.split("__RESULT__:")[1].strip().split("\n")[0]
-        return json.loads(json_str)
-    except Exception:
-        log.error("submission=%s could not parse forward output", sub_id[:8])
+        with StrategyProcess(code, language, timeout=TIMEOUT_SECS) as strategy:
+            result = score_strategy(strategy, market.prices("all"), market.features("all"), backtest)
+        return {"oos_sharpe": result.sharpe, "oos_annual_return": result.annualized_return,
+                "oos_max_dd": result.max_drawdown}
+    except Exception as exc:
+        log.warning("submission=%s forward evaluation failed: %s", sub_id[:8], exc)
         return None
 
 
@@ -237,7 +194,7 @@ def main() -> None:
             continue
 
         t0 = time.monotonic()
-        metrics = evaluate_submission(sub_id, code, seed)
+        metrics = evaluate_submission(sub_id, code, seed, sub.get("language") or "python")
         elapsed = time.monotonic() - t0
 
         if metrics is None:

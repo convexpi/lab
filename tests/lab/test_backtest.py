@@ -266,3 +266,10 @@ class TestBuiltinStrategies:
         feats_t = {k: v[30] for k, v in features.items()}
         w = strat.on_day(30, feats_t, prices[30], np.zeros(n))
         assert np.all(w >= 0)
+
+
+def test_drawdown_includes_starting_capital_and_empty_series():
+    from convexpi.lab.backtest import BacktestResult
+    for returns, expected in [([-0.1], 0.1), ([-0.1, 0.05], 0.1), ([], 0.0), ([0.1], 0.0)]:
+        result = BacktestResult(np.array(returns), np.zeros((len(returns), 1)), 0, 1, 0)
+        assert result.max_drawdown == pytest.approx(expected)

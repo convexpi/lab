@@ -1,38 +1,25 @@
 FROM python:3.12-slim
 
-# R + Julia toolchains so the grader can execute R/Julia strategies. Base only — the harnesses use
-# stdlib (R read.csv, Julia DelimitedFiles), so no extra language packages are needed.
-ARG JULIA_VERSION=1.10.5
+# This is the trusted coordinator. Language runtimes belong in Dockerfile.sandbox;
+# the coordinator only needs the Docker client and the Python scoring libraries.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends r-base-core curl ca-certificates xz-utils \
-    && curl -fsSL "https://julialang-s3.julialang.org/bin/linux/x64/1.10/julia-${JULIA_VERSION}-linux-x86_64.tar.gz" \
-       | tar -xz -C /opt \
-    && ln -s /opt/julia-${JULIA_VERSION}/bin/julia /usr/local/bin/julia \
+    && apt-get install -y --no-install-recommends docker-cli ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
-# Julia's bundled libs (e.g. libopenlibm.so) are flagged as needing an executable stack, which the
-# sandboxed grader container refuses ("cannot enable executable stack"), so Julia can't boot. The
-# classic `execstack -c` fix is unavailable on Debian bookworm, so clear the PT_GNU_STACK exec bit
-# directly with a tiny dependency-free ELF patcher.
-COPY deploy/clear_execstack.py /tmp/clear_execstack.py
-RUN python3 /tmp/clear_execstack.py /opt/julia-${JULIA_VERSION}/lib && rm /tmp/clear_execstack.py
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ src/
-COPY deploy/grader_worker.py deploy/grader_worker.py
+COPY deploy/ deploy/
 RUN pip install --no-cache-dir .
 
-# Optional: install Docker CLI so the grader can launch sandboxed subcontainers.
-# Set GRADER_DOCKER_IMAGE=<this image tag> in Railway env vars to enable Docker-in-Docker mode.
-# Without it the grader falls back to a plain subprocess (less secure but functional).
-# RUN apt-get update && apt-get install -y docker.io && rm -rf /var/lib/apt/lists/*
+# Hosted execution requires a reachable Docker daemon and a prebuilt, credential-free
+# GRADER_DOCKER_IMAGE. There is deliberately no host-process fallback.
 
-# Required env vars (set in Railway):
+# Required env vars (set on the dedicated host):
 #   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_KEY, MARKET_SEED
 # Optional:
 #   MARKET_N_STOCKS, MARKET_N_DAYS, GRADE_TIMEOUT, MAX_SUBMISSIONS_PER_RUN
-#   GRADER_DOCKER_IMAGE  — set to enable Docker sandbox isolation
+#   GRADER_DOCKER_IMAGE  — REQUIRED for grading (build deploy/Dockerfile.sandbox)
 #   SENTRY_DSN           — set to enable Sentry error monitoring
 
 CMD ["python", "deploy/grader_worker.py", "--once"]

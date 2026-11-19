@@ -7,9 +7,9 @@ predicts the next session's return; we score the realized move. The result (dire
 cumulative PnL, Sharpe) is upserted into sp500_scores. Run daily after the US close — each run folds in
 the newest day, so the standings are genuinely live and out-of-sample.
 
-Safety: submitted code is validated and executed via deploy/sandbox.py — AST-checked imports, a
-stripped environment that carries no credentials, and POSIX resource limits. See that module for
-what this does and does not guarantee.
+Safety: submitted code runs in a mandatory container with no network, host filesystem, or
+deployment credentials. Only historical observations cross the boundary; the worker computes
+all scores from the returned forecasts. See deploy/SECURITY.md for deployment requirements.
 
 Identity: each forecast is stamped with a hash of the code that produced it, and the live
 aggregates only count forecasts from the model's current code. Editing a submission therefore
@@ -32,7 +32,8 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stats  # noqa: E402
-from sandbox import Rejected, run as run_sandboxed, validate  # noqa: E402
+from sandbox import Rejected, validate
+from evaluation import StrategyProcess  # noqa: E402
 
 URL = (os.environ.get("SUPABASE_URL") or os.environ["NEXT_PUBLIC_SUPABASE_URL"]).rstrip("/")
 KEY = os.environ["SUPABASE_SERVICE_KEY"]
@@ -93,90 +94,44 @@ def fetch_models():
     return json.loads(urllib.request.urlopen(r, timeout=60).read())
 
 
-RUNNER = """
-import json, numpy as np, pandas as pd
-prices = pd.read_csv({csv!r}, index_col=0, parse_dates=True)
-
-{user_code}
-
-close = prices['close'].values
-n = len(close)
-start = max(1, n - {window} - 1)
-cost = {cost_bps} / 10000.0
-pnl, gross, bench, hits, bets, flips = [], [], [], 0, 0, 0
-prev_s = 0
-for i in range(start, n - 1):
-    hist = prices.iloc[:i + 1]
-    try:
-        p = float(predict(hist))
-    except Exception:
-        p = 0.0
-    realized = close[i + 1] / close[i] - 1.0
-    s = 1 if p > 0 else (-1 if p < 0 else 0)
-    # Cost is charged on the size of the position change, so a hold pays nothing, a flat->long pays
-    # one unit and a long->short pays two.
-    turn = abs(s - prev_s)
-    flips += int(turn > 0)
-    gross.append(s * realized)
-    pnl.append(s * realized - cost * turn)
-    bench.append(realized)                      # buy & hold, the null this all competes against
-    prev_s = s
-    if s != 0:
-        bets += 1
-        hits += int(s == (1 if realized > 0 else -1))
-pnl, gross, bench = np.array(pnl), np.array(gross), np.array(bench)
-
-
-def _sharpe(x):
-    return float(np.sqrt(252) * x.mean() / x.std()) if len(x) and x.std() > 1e-12 else 0.0
-
-
-# Excess over buy & hold: the question a visitor actually has is "did this beat just holding it?",
-# which an absolute Sharpe cannot answer.
-excess = pnl - bench
-# The model's live call for the NEXT (unrealized) session: predict on the full history.
-try:
-    fwd = float(predict(prices))
-except Exception:
-    fwd = 0.0
-print(json.dumps({{
-    "n_days": int(len(pnl)),
-    "hit_rate": (hits / bets) if bets else 0.0,
-    "cum_return": float(np.prod(1 + pnl) - 1),
-    "sharpe": _sharpe(pnl),
-    "gross_sharpe": _sharpe(gross),
-    "cost_drag": float(np.prod(1 + gross) - np.prod(1 + pnl)),
-    "turnover": float(flips / len(pnl)) if len(pnl) else 0.0,
-    "excess_return": float(np.prod(1 + pnl) - np.prod(1 + bench)),
-    "info_ratio": _sharpe(excess),
-    "last_date": str(prices.index[-1].date()),
-    "last_forecast": fwd,
-    "last_forecast_as_of": str(prices.index[-1].date()),
-}}))
-"""
-
-
 def score_model(code: str, csv_path: str) -> tuple[dict | None, str | None]:
-    """Score one submission. Returns (result, error); exactly one is non-None.
-
-    The error string is written back to the model row so its author can see why nothing scored —
-    silent failure is the worst possible feedback on a competition site.
-    """
+    """Only predictions cross the isolation boundary; all returns/metrics stay trusted."""
+    import numpy as np
+    import pandas as pd
     try:
         validate(code)
     except Rejected as e:
         return None, f"rejected: {e}"
-    script = RUNNER.format(csv=csv_path, user_code=code, window=WINDOW, cost_bps=COST_BPS)
+    prices = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+    close = prices['close'].to_numpy()
+    start = max(1, len(close) - WINDOW - 1)
+    predictions = []
     try:
-        out = run_sandboxed(script, timeout=TIMEOUT, cpu_seconds=TIMEOUT - 15)
+        with StrategyProcess(code, timeout=TIMEOUT, mode='forecast') as strategy:
+            for i in range(start, len(close) - 1):
+                predictions.append(strategy.predict(prices.iloc[:i + 1]))
+            fwd = strategy.predict(prices)
     except subprocess.TimeoutExpired:
         return None, f"timed out after {TIMEOUT}s"
-    if out.returncode != 0:
-        return None, f"crashed: {(out.stderr.strip().splitlines() or ['(no output)'])[-1][:300]}"
-    try:
-        return json.loads(out.stdout.strip().splitlines()[-1]), None
-    except (ValueError, IndexError):
-        return None, "produced no parsable result"
+    except Exception as e:
+        return None, f"strategy failed: {e}"
+    bench = close[start + 1:] / close[start:-1] - 1
+    signs = np.sign(predictions)
+    turn = np.abs(np.diff(np.r_[0.0, signs]))
+    gross = signs * bench
+    pnl = gross - COST_BPS / 10000.0 * turn
+    bets = signs != 0
+
+    def sharpe(x):
+        return float(np.sqrt(252) * x.mean() / x.std()) if len(x) and x.std() > 1e-12 else 0.0
+
+    return {"n_days": len(pnl), "hit_rate": float((signs[bets] * bench[bets] > 0).mean()) if bets.any() else 0.0,
+            "cum_return": float(np.prod(1 + pnl) - 1), "sharpe": sharpe(pnl),
+            "gross_sharpe": sharpe(gross), "cost_drag": float(np.prod(1 + gross) - np.prod(1 + pnl)),
+            "turnover": float((turn > 0).mean()) if len(turn) else 0.0,
+            "excess_return": float(np.prod(1 + pnl) - np.prod(1 + bench)), "info_ratio": sharpe(pnl - bench),
+            "last_date": str(prices.index[-1].date()), "last_forecast": fwd,
+            "last_forecast_as_of": str(prices.index[-1].date())}, None
 
 
 def update_live_track(mid: str, as_of: str, forecast, dates: list[str], closes: list[float],

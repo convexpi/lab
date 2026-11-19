@@ -1,7 +1,7 @@
 """
 grader_worker.py — Polls Supabase for pending submissions and grades them.
 
-Deploy as a Railway cron service that drains pending work and exits:
+Run on the dedicated Docker host, draining pending work and exiting:
     python deploy/grader_worker.py --once
 
 Required env vars:
@@ -17,8 +17,8 @@ Per-cohort overrides (stored in cohorts.market_config JSONB):
                                 start_day, end_day} dicts; replaces default alphas
 
 Security model:
-    - Student code runs in a credential-free subprocess with time/resource limits.
-    - A Docker sandbox adds network and filesystem isolation when explicitly configured.
+    - Student code runs in mandatory, credential-free Docker containers.
+    - Trusted scoring streams observations and accepts only bounded decisions.
     - Blocked imports are checked before execution (belt-and-suspenders with the API route check).
     - Each submission runs in a temp directory, isolated from other submissions.
     - Deployment credentials are never inherited by student code.
@@ -31,14 +31,8 @@ import json
 import time
 import argparse
 import logging
-import tempfile
-import textwrap
 import subprocess
 import traceback
-from pathlib import Path
-
-if sys.platform.startswith("linux"):
-    import resource
 
 import urllib.request
 import urllib.error
@@ -202,153 +196,21 @@ def notify_grade_failed(sub_id: str, message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Grade runner — executes with a clean environment in a bounded subprocess
+# Grade runner — streams decisions from a mandatory isolated container
 # ---------------------------------------------------------------------------
 
-# The runner always builds the market + grader the same way; only the strategy-execution middle
-# differs by language (Python inlines a MyStrategy class; R/Julia hand their source to the grader,
-# which runs it via its harness). Scoring + result extraction are shared.
-_SETUP = textwrap.dedent("""
-import sys, json
-sys.path.insert(0, "{pkg_path}")
-from convexpi.lab import SyntheticMarket, Grader
-from convexpi.lab.synth import PlantedAlpha
-
-_planted_alphas = {planted_alphas_repr}
-market = SyntheticMarket(
-    n_stocks={n_stocks}, n_days={n_days}, seed={seed}, idio_process="{idio_process}",
-    planted_alphas=_planted_alphas if _planted_alphas is not None else None,
-)
-grader = Grader(market)
-""")
-
-_PY_EXEC = textwrap.dedent("""
-{user_code}
-
-report = grader.evaluate(MyStrategy())
-""")
-
-_FOREIGN_EXEC = textwrap.dedent("""
-report = grader.evaluate_language("{language}", {user_code_repr}, name="strategy")
-""")
-
-_RESULT = textwrap.dedent("""
-result = dict(
-    is_sharpe=report.is_sharpe,
-    oos_sharpe=report.oos_sharpe,
-    overfitting_ratio=report.overfitting_ratio,
-    is_max_dd=report.is_max_dd,
-    oos_max_dd=report.oos_max_dd,
-    is_annual_return=report.is_result.annualized_return,
-    oos_annual_return=report.oos_result.annualized_return,
-    is_turnover=report.is_result.turnover_annual,
-    oos_turnover=report.oos_result.turnover_annual,
-    alphas_discovered=sum(1 for d in report.alpha_discovery if d.discovered),
-    total_alphas=len(report.alpha_discovery),
-    alpha_details=[
-        dict(feature=d.feature, planted_bps=d.planted_strength_bps,
-             corr=d.correlation, discovered=d.discovered, signal_ir=d.oos_contribution)
-        for d in report.alpha_discovery
-    ],
-    noise_loadings={{k: v for k, v in report.noise_loadings.items()}},
-)
-print("__RESULT__:" + json.dumps(result))
-""")
-
-PY_RUNNER = _SETUP + _PY_EXEC + _RESULT
-FOREIGN_RUNNER = _SETUP + _FOREIGN_EXEC + _RESULT
-
-# Where the convexpi package lives (same container)
-PKG_PATH = str(Path(__file__).parent.parent / "src")
+try:
+    from .evaluation import grade_code, report_dict
+    from .check_runtime import check_runtime
+except ImportError:
+    from evaluation import grade_code, report_dict
+    from check_runtime import check_runtime
+from convexpi.lab import SyntheticMarket, PlantedAlpha
 
 BLOCKED_PATTERNS = [
     "import os", "import sys", "import subprocess", "import socket",
     "import requests", "__import__", "open(", "eval(", "exec(",
 ]
-
-# Docker sandbox config — set GRADER_DOCKER_IMAGE to enable network/filesystem
-# isolation. The fallback still strips credentials and applies POSIX limits,
-# but it isn't a complete security boundary against hostile native code.
-DOCKER_IMAGE   = os.environ.get("GRADER_DOCKER_IMAGE", "")
-DOCKER_TIMEOUT = TIMEOUT_SECS + 5  # outer timeout slightly larger than inner
-
-
-def _docker_available() -> bool:
-    """Return True if the Docker daemon is reachable."""
-    try:
-        r = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
-        return r.returncode == 0
-    except Exception:
-        return False
-
-_USE_DOCKER: bool | None = None  # resolved lazily once
-
-
-def _sandbox_env(tmpdir: str) -> dict[str, str]:
-    """Return a minimal environment with no host or deployment credentials."""
-    clean = {
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "HOME": tmpdir,
-        "TMPDIR": tmpdir,
-        "PYTHONNOUSERSITE": "1",
-        "PYTHONUNBUFFERED": "1",
-        "OMP_NUM_THREADS": "1",
-        "OPENBLAS_NUM_THREADS": "1",
-        "MKL_NUM_THREADS": "1",
-    }
-    for name in ("LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT"):
-        if os.environ.get(name):
-            clean[name] = os.environ[name]
-    return clean
-
-
-def _limit_subprocess_resources() -> None:
-    """Apply defense-in-depth limits to the non-Docker fallback on POSIX."""
-    if not sys.platform.startswith("linux"):
-        return
-    memory_bytes = 768 * 1024 * 1024
-    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
-    resource.setrlimit(resource.RLIMIT_CPU, (TIMEOUT_SECS, TIMEOUT_SECS + 1))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
-    resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-
-
-def _run_script(script_path: str, tmpdir: str) -> subprocess.CompletedProcess:
-    """Run the grader script either inside a Docker sandbox or bare subprocess."""
-    global _USE_DOCKER
-    if _USE_DOCKER is None:
-        _USE_DOCKER = bool(DOCKER_IMAGE) and _docker_available()
-        log.info("sandbox mode: %s", "docker" if _USE_DOCKER else "subprocess")
-
-    if _USE_DOCKER:
-        cmd = [
-            "docker", "run",
-            "--rm",
-            "--network", "none",        # no outbound network
-            "--read-only",              # read-only root filesystem
-            "--tmpfs", "/tmp:size=64m", # writable /tmp for numpy etc.
-            "--memory", "512m",
-            "--cpus", "1",
-            "-v", f"{tmpdir}:{tmpdir}:ro",   # mount script read-only
-            "-v", f"{PKG_PATH}:{PKG_PATH}:ro",
-            DOCKER_IMAGE,
-            "python", script_path,
-        ]
-    else:
-        cmd = [sys.executable, script_path]
-
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=DOCKER_TIMEOUT if _USE_DOCKER else TIMEOUT_SECS,
-        cwd=tmpdir,
-        env=None if _USE_DOCKER else _sandbox_env(tmpdir),
-        preexec_fn=(None if _USE_DOCKER or not sys.platform.startswith("linux")
-                    else _limit_subprocess_resources),
-        start_new_session=not _USE_DOCKER,
-    )
 
 
 def grade_submission(submission: dict) -> None:
@@ -382,64 +244,24 @@ def grade_submission(submission: dict) -> None:
     # per cohort so existing markets/grades are unchanged unless a cohort explicitly asks for it.
     idio_process = "garch" if str(cfg.get("idio_process", "t")).lower() == "garch" else "t"
 
-    # Build planted_alphas repr for the runner script
-    raw_alphas = cfg.get("planted_alphas")  # list of dicts, or None = use defaults
-    if raw_alphas is not None:
-        alpha_reprs = []
-        for a in raw_alphas:
-            alpha_reprs.append(
-                f"PlantedAlpha("
-                f"feature={a['feature']!r}, "
-                f"strength_bps={float(a['strength_bps'])}, "
-                f"halflife_days={int(a.get('halflife_days', 20))}, "
-                f"start_day={int(a.get('start_day', 0))}, "
-                f"end_day={int(a.get('end_day', -1))})"
-            )
-        planted_alphas_repr = "[" + ", ".join(alpha_reprs) + "]"
-    else:
-        planted_alphas_repr = "None"  # SyntheticMarket will use its own defaults
-
-    common = dict(pkg_path=PKG_PATH, n_stocks=n_stocks, n_days=n_days, seed=seed,
-                  idio_process=idio_process, planted_alphas_repr=planted_alphas_repr)
-    if language == "python":
-        runner = PY_RUNNER.format(user_code=code, **common)
-    else:
-        runner = FOREIGN_RUNNER.format(language=language, user_code_repr=repr(code), **common)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        script = Path(tmpdir) / "runner.py"
-        script.write_text(runner)
-
-        t_start = time.monotonic()
-        try:
-            result = _run_script(str(script), tmpdir)
-        except subprocess.TimeoutExpired:
-            elapsed = time.monotonic() - t_start
-            log.warning("submission=%s timed out after %.1fs", sub_id[:8], elapsed)
-            msg = f"Timed out after {TIMEOUT_SECS}s. Simplify your strategy."
-            mark_failed(sub_id, msg)
-            notify_grade_failed(sub_id, msg)
-            return
-
-    elapsed = time.monotonic() - t_start
-    stdout = result.stdout
-
-    if result.returncode != 0 or "__RESULT__:" not in stdout:
-        stderr = result.stderr[-2000:] if result.stderr else "(no stderr)"
-        log.warning("submission=%s error (rc=%d, %.1fs): %s",
-                    sub_id[:8], result.returncode, elapsed, stderr[:200])
-        msg = f"Strategy raised an error:\n{stderr}"
+    raw_alphas = cfg.get("planted_alphas")
+    alphas = [PlantedAlpha(**a) for a in raw_alphas] if raw_alphas is not None else None
+    market = SyntheticMarket(n_stocks=n_stocks, n_days=n_days, seed=seed,
+                             idio_process=idio_process, planted_alphas=alphas)
+    t_start = time.monotonic()
+    try:
+        report_data = report_dict(grade_code(code, language, market, timeout=TIMEOUT_SECS))
+    except subprocess.TimeoutExpired:
+        msg = f"Timed out after {TIMEOUT_SECS}s. Simplify your strategy."
         mark_failed(sub_id, msg)
         notify_grade_failed(sub_id, msg)
         return
-
-    try:
-        json_str = stdout.split("__RESULT__:")[1].strip().split("\n")[0]
-        report_data = json.loads(json_str)
-    except Exception:
-        log.error("submission=%s could not parse grader output", sub_id[:8])
-        mark_failed(sub_id, "Could not parse grader output.")
+    except Exception as exc:
+        msg = f"Strategy evaluation failed: {exc}"
+        mark_failed(sub_id, msg)
+        notify_grade_failed(sub_id, msg)
         return
+    elapsed = time.monotonic() - t_start
 
     write_grade_report(sub_id, report_data)
     mark_completed(sub_id)
@@ -452,7 +274,7 @@ def grade_submission(submission: dict) -> None:
 # Poll loop
 # ---------------------------------------------------------------------------
 
-WORKER_BUILD = "2026-10-27-cron-1"  # bump to confirm which image Railway is actually running
+WORKER_BUILD = "2026-11-19-isolated-1"
 
 def _grade_pending_once() -> int:
     """Drain a bounded batch and return the number of submissions processed."""
@@ -475,9 +297,12 @@ def _grade_pending_once() -> int:
 
 
 def main(*, run_once: bool = False):
+    # Infrastructure outages must not turn queued submissions into failed grades.
+    # Verify the daemon, image, shared mounts, and all language runtimes first.
+    check_runtime()
     log.info("grader worker started  build=%s  languages=python,r,julia  "
-             "seed=%d  stocks=%d  days=%d  mode=%s  poll=%.1fs  timeout=%ds",
-             WORKER_BUILD, MARKET_SEED, N_STOCKS, N_DAYS,
+             "stocks=%d  days=%d  mode=%s  poll=%.1fs  timeout=%ds",
+             WORKER_BUILD, N_STOCKS, N_DAYS,
              "once" if run_once else "continuous", POLL_SECONDS, TIMEOUT_SECS)
     if run_once:
         processed = _grade_pending_once()
@@ -496,6 +321,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ConvexPi submission grader")
     parser.add_argument(
         "--once", action="store_true",
-        help="Drain a bounded batch and exit (for Railway cron jobs)",
+        help="Drain a bounded batch and exit (for scheduled jobs)",
     )
     main(run_once=parser.parse_args().once)
